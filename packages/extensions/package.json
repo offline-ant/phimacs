@@ -15,7 +15,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
-    "compile": "node ../../scripts/compile-package.mjs && cp extensions/agents-md-template.md extensions/workflow-template.md dist/extensions/",
+    "compile": "node ../../scripts/compile-package.mjs --copy extensions/agents-md-template.md --copy extensions/workflow-template.md",
     "prepack": "npm run compile"
   },
   "peerDependencies": {

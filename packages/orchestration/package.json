@@ -45,7 +45,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
-    "compile": "node ../../scripts/compile-package.mjs && chmod +x dist/worker-task-cli.js",
+    "compile": "node ../../scripts/compile-package.mjs --executable worker-task-cli.js",
     "prepack": "npm run compile"
   },
   "exports": {

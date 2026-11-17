@@ -13,6 +13,10 @@ node scripts/test.mjs packages/pimux/host.test.ts
 ```
 
 Compile prerequisites first when a package uses their generated declarations.
+A package compile builds into a hidden sibling directory and replaces `dist/` by
+two renames only after success; a failed or interrupted compile keeps the previous
+`dist/`. Post-build files use `scripts/compile-package.mjs`'s `--copy` and
+`--executable` options so they are in place before the swap.
 Package tsconfigs share the root config; root compile/check visit workspaces in
 manifest order. Root commands are conveniences, not substitutes for focused
 package checks. Package READMEs own those checks. Emacs-only edits need no unrelated

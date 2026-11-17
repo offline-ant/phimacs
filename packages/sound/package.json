@@ -21,7 +21,7 @@
   "pi": { "extensions": ["./host-modules.ts", "./dist/extension.js"] },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",
-    "compile": "node ../../scripts/compile-package.mjs && chmod +x dist/main.js",
+    "compile": "node ../../scripts/compile-package.mjs --executable main.js",
     "prepack": "npm run compile"
   },
   "dependencies": { "@phimacs/pimux": "0.1.0" },
