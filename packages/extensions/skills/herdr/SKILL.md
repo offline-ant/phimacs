@@ -35,7 +35,7 @@ herdr tab
 
 Use `--help` for nested commands. Do not run bare `herdr` for discovery: it launches or attaches the TUI. Do not probe mutating commands by omitting arguments; commands such as `workspace create` execute with defaults.
 
-This guide reflects stable 0.9.0. Client and server versions may differ after updating. Check `herdr status` before relying on new server features; a missing method does not authorize restarting a server.
+This guide covers Herdr 0.9.x; it was checked against 0.9.0 and 0.9.5. Client and server versions may differ after updating. Check `herdr status` before relying on new server features; a missing method does not authorize restarting a server.
 
 ## Concepts and caller identity
 
@@ -158,4 +158,5 @@ Without `--label`, tabs keep numbered names and workspaces use cwd-based names. 
 - Run `herdr update` from an outside terminal after detaching. Do not clear inherited Herdr variables to bypass its inside-session safeguard. Respect any confirmation to stop incompatible servers; updating the binary is not permission to terminate pane processes.
 - Never run `herdr server stop` in an active session unless the user explicitly intends to stop the server and all its pane processes. Do not opt into experimental handoff without approval.
 - Lifecycle subscriptions in 0.9.0 start with live events, not retained history. Subscribe before taking an initial snapshot to avoid gaps.
+- From 0.9.2, a subscriber that falls too far behind receives an `events_lost` error instead of silently missing events. Resubscribe, then take a fresh snapshot.
 - Most control commands return JSON; `pane read` defaults to text. `pane send-text`, `pane send-keys`, and `pane run` are silent on success. Server errors are JSON on stderr with exit status 1; syntax errors exit with status 2.

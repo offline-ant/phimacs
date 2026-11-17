@@ -10,11 +10,13 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { TERMINAL_INPUT_EXTENSION, terminalRequest } from "@phimacs/orchestration/terminal-input";
 import { HerdrFinishClient, type HerdrPane } from "../../packages/extensions/extensions/herdr-finish-client.ts";
+import { managedTerminalArgv } from "../../packages/orchestration/managed-launch.ts";
 import { finishExtension, lifecycleFixture, requiredTestPath } from "../support/assets.ts";
 
 const exec = promisify(execFile);
 type NativePane = { pane: HerdrPane; directory: string; control: string };
 type Trace = { event: string; prompt?: string; draft?: string; commands?: string[]; provider?: string };
+const quote = (text: string): string => `'${text.replaceAll("'", `'"'"'`)}'`;
 
 // Real Pi TUIs, production finish commands and the installed managed integration.
 // Faux inference is held by fixture-owned files; never report fake states at a shell.
@@ -66,18 +68,14 @@ test("Herdr native finish: TUI commands, late agents, blocked waiters, cancellat
     return target;
   }
   async function start(target: NativePane) {
-    const args = ["agent", "start", `${name}-${owned.indexOf(target)}`, "--kind", "pi", "--pane", target.pane.pane_id,
-      "--", "--offline", "--session", join(target.directory, "session.jsonl"),
-      "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files", "--no-builtin-tools",
-      "--model", "orchestration-fixture/one", "--thinking", "off",
-      "-e", lifecycleFixture, "-e", integration, "-e", finishExtension, "-e", TERMINAL_INPUT_EXTENSION];
-    await until(async () => {
-      try { await cli(...args); return true; }
-      catch (error) {
-        if (!(error instanceof Error) || !error.message.includes("agent_pane_busy")) throw error;
-        return false;
-      }
-    }, `start Pi in ${target.pane.pane_id}`);
+    // Launch as the Herdr host does: the managed wrapper claims the session before
+    // Pi opens, which the private input extension requires.
+    const argv = managedTerminalArgv({ kind: "pi", name: `${name}-${owned.indexOf(target)}`, cwd: target.directory,
+      placement: "worker", sessionFile: join(target.directory, "session.jsonl"),
+      args: ["--offline", "--no-extensions", "--no-skills", "--no-prompt-templates", "--no-context-files",
+        "--no-builtin-tools", "--model", "orchestration-fixture/one", "--thinking", "off",
+        "-e", lifecycleFixture, "-e", integration, "-e", finishExtension] }, [TERMINAL_INPUT_EXTENSION]);
+    await cli("pane", "run", target.pane.pane_id, `exec ${argv.map(quote).join(" ")}`);
     await until(() => existsSync(target.control), "private Pi input endpoint");
     await terminalRequest(target.control, { kind: "ping" }, t.signal);
     await status(target, "idle", "done");

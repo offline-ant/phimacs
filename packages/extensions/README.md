@@ -24,10 +24,11 @@ manifest.
 Source edits do not reload existing sessions. Compile and check affected code
 before a reload; do not mix old and new package graphs.
 
-Emacs startup must load `orchestration/emacs/pi-orchestration.el` in Pilish's
-`use-package :config` before the first Pi spawn. The companion owns host/server
-identity and `C-M-f`; the separate Pilish checkout contains only generic session
-APIs, RPC input/settlement, and editor dialogs. See the linked orchestration README.
+The package works in any Pi frontend, including Pi's own TUI in tmux or Herdr
+without Emacs. With Pilish, orchestration's Emacs companion
+(`packages/orchestration/emacs/pi-orchestration.el`) owns host/server identity and
+`C-M-f`; the [orchestration README](../orchestration/README.md#hosts) says how to
+load it.
 
 ## Agent tools
 
@@ -216,7 +217,7 @@ The package exports `skills/`. After `/reload` or in a new session, invoke
 `/skill:herdr` or ask the agent to use the skill. Other agents can read
 [`skills/herdr/SKILL.md`](skills/herdr/SKILL.md) directly.
 
-- `herdr` — local guidance for Herdr 0.9.0 CLI operations, with ownership safeguards and a separate managed Pi orchestration workflow.
+- `herdr` — local guidance for Herdr 0.9.x CLI operations, with ownership safeguards and a separate managed Pi orchestration workflow.
 
 Verify package skill discovery without model calls:
 

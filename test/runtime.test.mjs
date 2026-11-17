@@ -4,7 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { resolveHost } from '@phimacs/pimux/host-identity';
+import { acquireClaim, createClaimTestEnvironment, releaseClaim } from '@phimacs/pimux/ownership';
+import { readProcessIdentity } from '@phimacs/pimux/process-identity';
 import { hostVersionWarning, runtimePaths, runtimeEnvironment, sourceRoot } from '../scripts/runtime.mjs';
 import { updatePi } from '../scripts/update-pi.mjs';
 
@@ -23,6 +26,36 @@ test('checkout launch resolves the global or overriding host and administrative 
   assert.equal(result.stdout.trim(), runtime.version);
   assert.equal(fs.existsSync(env.PIMUX_DIR), false);
   assert.equal(fs.existsSync(env.PI_CODING_AGENT_DIR), false);
+});
+
+test('phimacs pi runs Pi under the managed writer claim and starts no service', { timeout: 20_000 }, t => {
+  const namespace = createClaimTestEnvironment();
+  t.after(() => fs.rmSync(namespace.root, { recursive: true, force: true }));
+  const home = path.join(namespace.root, 'home');
+  fs.mkdirSync(home, { mode: 0o700 });
+  const session = path.join(namespace.sessions, 'session.jsonl');
+  fs.writeFileSync(session, `${JSON.stringify({ type: 'session', version: 3, id: randomUUID(),
+    timestamp: new Date().toISOString(), cwd: namespace.root })}\n`, { mode: 0o600 });
+  const env = { PATH: process.env.PATH, HOME: home, LANG: 'C.UTF-8', TMPDIR: namespace.root, ...namespace.env,
+    PHIMACS_PI: runtimePaths().pi, PHIMACS_STATE_DIR: path.join(namespace.root, 'state'),
+    PI_CODING_AGENT_DIR: path.join(namespace.root, 'agent') };
+  const exportSession = output => spawnSync(path.join(sourceRoot, 'bin/phimacs'), ['pi', '--export', session, output],
+    { cwd: namespace.root, env, encoding: 'utf8', timeout: 15_000 });
+  // Another writer's claim on the conversation shows that `phimacs pi` takes the claim itself.
+  const held = acquireClaim(session, { id: 'other-writer', kind: 'tui', wrapper: readProcessIdentity(process.pid), pi: null },
+    namespace.options);
+  const refused = exportSession(path.join(namespace.root, 'refused.html'));
+  releaseClaim(held);
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /Session is owned by tui other-writer/);
+  const output = path.join(namespace.root, 'export.html');
+  const exported = exportSession(output);
+  assert.equal(exported.status, 0, exported.stderr);
+  assert.ok(fs.statSync(output).size > 0);
+  assert.equal(fs.existsSync(path.join(namespace.root, 'refused.html')), false);
+  // Neither the service's state and journal nor its runtime directory was created.
+  assert.equal(fs.existsSync(env.PHIMACS_STATE_DIR), false);
+  assert.equal(fs.existsSync(env.PIMUX_DIR), false);
 });
 
 test('only a major.minor difference between the global host and the checkout SDK warns', () => {

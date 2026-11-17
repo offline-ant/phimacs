@@ -9,11 +9,14 @@ its Pi extension manifest are separate choices; there is no extension-local inst
 The [npm package](../../docs/development.md#npm-packages) carries the same compiled
 manifest; `emacs/` is also the `pi-orchestration` Emacs package.
 Managed Pi launches resolve the selected global Pi to an absolute executable and
-use common session claims. RPC agents and workers belong to the separate foreground pimux
-service; every frontend is a protocol-2 socket client. Only the `phimacs` launcher
-or a supervisor starts the service; frontends never do: launches wait up to ten
-seconds for readiness and otherwise report how to bring it up. Service restart restores roots idle, never workers or interrupted
-work; see the [lifecycle](../../docs/lifecycle.md). No PATH-resolved `pi` or raw recovery writer is supported.
+use common session claims. On the Emacs host, RPC agents and workers belong to the
+separate foreground pimux service; every Pilish frontend is a protocol-2 socket
+client. Only the `phimacs` launcher or a supervisor starts the service; frontends
+never do: launches wait up to ten seconds for readiness and otherwise report how to
+bring it up. Service restart restores roots idle, never workers or interrupted
+work; see the [lifecycle](../../docs/lifecycle.md). The tmux and Herdr hosts need no
+service or Emacs: their workers run Pi's TUI under `pimux tui`, which holds the
+writer claim itself. No PATH-resolved `pi` or raw recovery writer is supported.
 Native CLI/control replies have an explicit 1 MiB execution cap. Truncated replies
 fail before parsing or accepting success, including zero-status replies. Panel
 streaming/capture keeps its separate runtime and output limits.

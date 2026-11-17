@@ -7,7 +7,8 @@
 #   phimacs setup                         one-time networked preparation
 #   phimacs status [--json]               service, agents, Emacs, setup, shares
 #   phimacs stop [--force]                save and quit Emacs, then stop pimux
-#   phimacs pi [ARGS]                     Pi's terminal UI as a managed agent
+#   phimacs pi [ARGS]                     Pi's terminal UI under the managed
+#                                         writer claim; no service or Emacs
 #   phimacs service pimux|emacs           a foreground service for a supervisor
 #   phimacs pimux ARGS                    the pimux client of this checkout
 #   phimacs share                         share this device's microphone, speaker

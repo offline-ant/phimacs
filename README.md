@@ -3,7 +3,7 @@
 An Emacs workspace for Pi agents: Pilish chat, pi-deck project spaces and a
 persistent pimux runtime. Managed workers, browser tools and sound are optional.
 
-Use the same packages in either of two ways:
+Use the same packages in any of three ways:
 
 - **Keep your Emacs configuration:** install the packages you want with
   `use-package :vc`; no profile theme, completion stack or key scheme is required.
@@ -11,6 +11,9 @@ Use the same packages in either of two ways:
   service and a dedicated Emacs daemon, then opens a terminal frame (`--gui` for a
   graphical one). `emacs --init-directory=…/emacs/config` also works. The profile
   does not replace `~/.emacs.d`.
+- **Use Pi in Herdr or tmux, without Emacs:** workers, panels and the general
+  extensions in Pi's own terminal UI; this also covers
+  [updating from `pi-ant` or `pi-browser`](docs/install.md#pi-in-herdr-or-tmux-without-emacs).
 
 [Installation](docs/install.md) owns the ordered setup: clone and compile, provider
 login, `phimacs setup` once for pinned packages and native assets, then `phimacs`.
