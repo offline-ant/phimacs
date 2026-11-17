@@ -1,0 +1,4900 @@
+;;; pilish-ui-test.el --- Tests for pilish-ui -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026 Daniel Nouri
+
+;; Author: Daniel Nouri <daniel.nouri@gmail.com>
+
+;;; Commentary:
+
+;; Tests for buffer naming, creation, major modes, session directory,
+;; buffer linkage, and startup header — the UI foundation layer.
+
+;;; Code:
+
+(require 'ert)
+(require 'warnings)  ; ensure display-warning is loaded (not autoloaded)
+(require 'pilish)
+(require 'pilish-test-common)
+
+;;; Buffer Naming
+
+(ert-deftest pilish-test-buffer-name-chat ()
+  "Buffer name for chat includes abbreviated directory."
+  (let ((name (pilish--buffer-name :chat "/home/user/project/")))
+    (should (string-match-p "\\*pilish-chat:" name))
+    (should (string-match-p "project" name))))
+
+(ert-deftest pilish-test-buffer-name-input ()
+  "Buffer name for input includes abbreviated directory."
+  (let ((name (pilish--buffer-name :input "/home/user/project/")))
+    (should (string-match-p "\\*pilish-input:" name))
+    (should (string-match-p "project" name))))
+
+(ert-deftest pilish-test-buffer-name-abbreviates-home ()
+  "Buffer name abbreviates home directory to ~."
+  (let ((name (pilish--buffer-name :chat (expand-file-name "~/myproject/"))))
+    (should (string-match-p "~" name))))
+
+(ert-deftest pilish-test-buffer-name-preserves-multi-hop-route ()
+  "Buffer names keep the full TRAMP route for remote sessions."
+  (let* ((dir "/ssh:bastion|sudo:root@pi-host:/home/pi/project/")
+         (name (pilish--buffer-name :chat dir)))
+    (should (string-match-p (regexp-quote dir) name))
+    (should-not (string-match-p (regexp-quote "/sudo:root@pi-host:")
+                                name))))
+
+(ert-deftest pilish-test-path-to-language-known-extension ()
+  "path-to-language returns correct language for known extensions."
+  (should (equal "python" (pilish--path-to-language "/tmp/foo.py")))
+  (should (equal "javascript" (pilish--path-to-language "/tmp/bar.js")))
+  (should (equal "emacs-lisp" (pilish--path-to-language "/tmp/baz.el"))))
+
+(ert-deftest pilish-test-path-to-language-unknown-extension ()
+  "path-to-language returns 'text' for unknown extensions.
+This ensures all files get code fences for consistent display."
+  (should (equal "text" (pilish--path-to-language "/tmp/foo.txt")))
+  (should (equal "text" (pilish--path-to-language "/tmp/bar.xyz")))
+  (should (equal "text" (pilish--path-to-language "/tmp/noext"))))
+
+(ert-deftest pilish-test-path-to-language-ignores-non-string ()
+  "path-to-language returns nil for malformed path metadata."
+  (should-not (pilish--path-to-language '(:not "a path")))
+  (should-not (pilish--path-to-language ["not" "a" "path"])))
+
+;;; Buffer Creation
+
+(ert-deftest pilish-test-get-or-create-buffer-creates-new ()
+  "get-or-create-buffer creates a new buffer if none exists."
+  (let* ((dir "/tmp/pilish-test-unique-12345/")
+         (buf (pilish--get-or-create-buffer :chat dir)))
+    (unwind-protect
+        (progn
+          (should (bufferp buf))
+          (should (buffer-live-p buf)))
+      (when (buffer-live-p buf)
+        (kill-buffer buf)))))
+
+(ert-deftest pilish-test-get-or-create-buffer-returns-existing ()
+  "get-or-create-buffer returns existing buffer."
+  (let* ((dir "/tmp/pilish-test-unique-67890/")
+         (buf1 (pilish--get-or-create-buffer :chat dir))
+         (buf2 (pilish--get-or-create-buffer :chat dir)))
+    (unwind-protect
+        (should (eq buf1 buf2))
+      (when (buffer-live-p buf1)
+        (kill-buffer buf1)))))
+
+;;; Major Modes
+
+(ert-deftest pilish-test-chat-mode-is-read-only ()
+  "pilish-chat-mode sets buffer to read-only."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (should buffer-read-only)))
+
+(ert-deftest pilish-test-chat-mode-disables-undo-history ()
+  "Generated chat updates do not accumulate undo history."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (should (eq buffer-undo-list t))
+    (let ((inhibit-read-only t))
+      (insert "streamed response")
+      (delete-region (point-min) (point-max)))
+    (should (eq buffer-undo-list t))))
+
+(ert-deftest pilish-test-chat-mode-has-word-wrap ()
+  "pilish-chat-mode enables word wrap."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (should word-wrap)
+    (should-not truncate-lines)))
+
+(ert-deftest pilish-test-chat-mode-disables-hl-line ()
+  "pilish-chat-mode disables hl-line to prevent scroll oscillation."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (should-not hl-line-mode)
+    (should-not (buffer-local-value 'global-hl-line-mode (current-buffer)))))
+
+(ert-deftest pilish-test-chat-mode-is-special-buffer-mode ()
+  "Chat mode advertises the standard special-buffer contract."
+  (should (eq (get 'pilish-chat-mode 'mode-class) 'special)))
+
+(ert-deftest pilish-test-chat-mode-adds-window-change-hook ()
+  "pilish-chat-mode installs the buffer-local width refresh hook."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (should (local-variable-p 'window-configuration-change-hook))
+    (should (memq #'pilish--maybe-refresh-hot-tail-tables
+                  window-configuration-change-hook))))
+
+(ert-deftest pilish-test-chat-mode-initializes-with-theme-derived-diff-faces ()
+  "Chat mode startup should not depend on diff-mode being loaded elsewhere."
+  (with-temp-buffer
+    (let ((debug-on-error t))
+      (pilish-chat-mode)
+      (should (derived-mode-p 'pilish-chat-mode)))))
+
+(ert-deftest pilish-test-thinking-display-default-is-visible ()
+  "Package default keeps completed thinking expanded in new chat buffers."
+  (should (eq (default-value 'pilish-thinking-display) 'visible)))
+
+(ert-deftest pilish-test-chat-mode-initializes-thinking-display-from-default ()
+  "New chat buffers inherit the configured completed-thinking display default."
+  (let ((pilish-thinking-display 'hidden))
+    (with-temp-buffer
+      (pilish-chat-mode)
+      (should (eq pilish--thinking-display 'hidden)))))
+
+(ert-deftest pilish-test-thinking-display-override-is-buffer-local ()
+  "Changing one chat buffer's thinking display leaves others and the default alone."
+  (let ((pilish-thinking-display 'visible)
+        (buf-a (generate-new-buffer " *pi-thinking-display-a*"))
+        (buf-b (generate-new-buffer " *pi-thinking-display-b*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf-a
+            (pilish-chat-mode)
+            (pilish--set-thinking-display 'hidden))
+          (with-current-buffer buf-b
+            (pilish-chat-mode))
+          (should (eq pilish-thinking-display 'visible))
+          (should (eq (buffer-local-value 'pilish--thinking-display buf-a) 'hidden))
+          (should (eq (buffer-local-value 'pilish--thinking-display buf-b) 'visible)))
+      (when (buffer-live-p buf-a)
+        (kill-buffer buf-a))
+      (when (buffer-live-p buf-b)
+        (kill-buffer buf-b)))))
+
+(ert-deftest pilish-test-theme-diff-background-prefers-diff-face-background ()
+  "Theme-derived diff lines should reuse an existing diff background first."
+  (cl-letf (((symbol-function 'face-background)
+             (lambda (face &optional _frame _inherit)
+               (pcase face
+                 ('diff-added "#224422")
+                 ('default "#111111")
+                 (_ nil))))
+            ((symbol-function 'color-defined-p)
+             (lambda (color) (stringp color))))
+    (should (equal (pilish--theme-diff-background
+                    'diff-added 'diff-indicator-added)
+                   "#224422"))))
+
+(ert-deftest pilish-test-theme-diff-background-prefers-diff-face-foreground ()
+  "Theme-derived diff lines should prefer the diff face foreground before the indicator."
+  (cl-letf (((symbol-function 'face-background)
+             (lambda (face &optional _frame _inherit)
+               (pcase face
+                 ('diff-added nil)
+                 ('default "#111111")
+                 (_ nil))))
+            ((symbol-function 'face-foreground)
+             (lambda (face &optional _frame _inherit)
+               (pcase face
+                 ('diff-added "#bb3333")
+                 ('diff-indicator-added "#22aa22")
+                 (_ nil))))
+            ((symbol-function 'color-defined-p)
+             (lambda (color) (stringp color))))
+    (should (equal (pilish--theme-diff-background
+                    'diff-added 'diff-indicator-added)
+                   (pilish--blend-color "#111111" "#bb3333" 0.20)))))
+
+(ert-deftest pilish-test-theme-diff-background-falls-back-to-indicator-foreground ()
+  "Theme-derived diff lines should fall back to the indicator color when needed."
+  (cl-letf (((symbol-function 'face-background)
+             (lambda (face &optional _frame _inherit)
+               (pcase face
+                 ('diff-added nil)
+                 ('default "#fefefe")
+                 (_ nil))))
+            ((symbol-function 'face-foreground)
+             (lambda (face &optional _frame _inherit)
+               (pcase face
+                 ('diff-added nil)
+                 ('diff-indicator-added "#22aa22")
+                 (_ nil))))
+            ((symbol-function 'color-defined-p)
+             (lambda (color) (stringp color))))
+    (should (equal (pilish--theme-diff-background
+                    'diff-added 'diff-indicator-added)
+                   (pilish--blend-color "#fefefe" "#22aa22" 0.10)))))
+
+(ert-deftest pilish-test-update-theme-derived-faces-uses-background-only-overlays ()
+  "Theme-derived overlay faces should only contribute background tint."
+  (let (calls)
+    (cl-letf (((symbol-function 'face-background)
+               (lambda (face &optional _frame _inherit)
+                 (pcase face
+                   ('default "#111111")
+                   ('diff-added "#224422")
+                   ('diff-removed nil)
+                   (_ nil))))
+              ((symbol-function 'face-foreground)
+               (lambda (face &optional _frame _inherit)
+                 (pcase face
+                   ('diff-removed "#bb3333")
+                   ('diff-indicator-removed "#aa2222")
+                   (_ nil))))
+              ((symbol-function 'color-defined-p)
+               (lambda (color) (stringp color)))
+              ((symbol-function 'set-face-attribute)
+               (lambda (face _frame &rest args)
+                 (push (cons face args) calls))))
+      (pilish--update-theme-derived-faces)
+      (dolist (face '(pilish-diff-line-added
+                      pilish-diff-line-removed
+                      pilish-tool-block-error))
+        (let ((args (cdr (assq face calls))))
+          (should args)
+          (should (eq (plist-get args :inherit) nil))
+          (should (eq (plist-get args :foreground) 'unspecified))
+          (should (stringp (plist-get args :background)))
+          (should (eq (plist-get args :extend) t)))))))
+
+(ert-deftest pilish-test-chat-mode-write-file-preserves-chat-state ()
+  "`write-file' keeps chat buffers in chat mode with file backing attached."
+  (let ((file nil)
+        (root (pilish-test--make-temp-directory
+               "pilish-test-write-file-"))
+        (make-backup-files nil))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (setq default-directory root)
+          (setq pilish--process 'mock-process)
+          (let ((inhibit-read-only t))
+            (insert "Assistant\n=========\n\nHello\n"))
+          (setq file (pilish-test--write-chat-buffer
+                      (current-buffer) "pilish-chat-write-"))
+          (should (derived-mode-p 'pilish-chat-mode))
+          (should (eq pilish--process 'mock-process))
+          (should (equal buffer-file-name file))
+          (should buffer-read-only))
+      (ignore-errors (delete-file file))
+      (ignore-errors (delete-directory root t)))))
+
+(ert-deftest pilish-test-chat-mode-save-buffer-keeps-writing-to-bound-file ()
+  "Later `save-buffer' keeps writing to the same file-backed chat buffer."
+  (let ((file nil)
+        (make-backup-files nil))
+    (unwind-protect
+        (progn
+          (with-temp-buffer
+            (pilish-chat-mode)
+            (let ((inhibit-read-only t))
+              (insert "Assistant\n=========\n\nHello\n"))
+            (setq file (pilish-test--write-chat-buffer
+                        (current-buffer) "pilish-chat-save-"))
+            (let ((inhibit-read-only t))
+              (goto-char (point-max))
+              (insert "More\n"))
+            (save-buffer)
+            (should (derived-mode-p 'pilish-chat-mode))
+            (should (equal buffer-file-name file))
+            (should buffer-read-only))
+          (with-temp-buffer
+            (insert-file-contents file)
+            (should (equal (buffer-string)
+                           "Assistant\n=========\n\nHello\nMore\n"))))
+      (ignore-errors (delete-file file)))))
+
+(ert-deftest pilish-test-session-chat-write-file-preserves-canonical-name-and-directory ()
+  "Session chat buffers keep their canonical identity after `write-file'."
+  (let ((root (pilish-test--make-temp-directory
+               "pilish-test-write-file-session-"))
+        (file nil)
+        (chat nil)
+        (input nil)
+        (make-backup-files nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+                  ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+          (setq chat (pilish--setup-session root nil)
+                input (buffer-local-value 'pilish--input-buffer chat))
+          (setq file (pilish-test--write-chat-buffer
+                      chat "pilish-chat-session-" "Saved copy\n"))
+          (with-current-buffer chat
+            (should (equal (pilish--chat-session-buffer-name)
+                           (pilish-test--chat-buffer-name root)))
+            (should (equal (pilish--session-directory) root))
+            (should (equal buffer-file-name file))
+            (should buffer-read-only)))
+      (pilish-test--kill-live-buffers input chat)
+      (ignore-errors (delete-file file))
+      (ignore-errors (delete-directory root t)))))
+
+(ert-deftest pilish-test-input-mode-keeps-own-mode-with-markdown-default ()
+  "pilish-input-mode keeps its identity with markdown highlighting."
+  (with-temp-buffer
+    (pilish-input-mode)
+    (should (derived-mode-p 'pilish-input-mode))
+    (should (derived-mode-p 'text-mode))
+    (should-not md-ts-hide-markup)))
+
+(ert-deftest pilish-test-input-mode-not-read-only ()
+  "pilish-input-mode allows editing."
+  (with-temp-buffer
+    (pilish-input-mode)
+    (should-not buffer-read-only)))
+
+;;; Session Directory Detection
+
+(ert-deftest pilish-test-session-directory-uses-project-root ()
+  "Session directory is project root when in a project."
+  (let ((default-directory "/tmp/"))
+    (cl-letf (((symbol-function 'project-current)
+               (lambda (&rest _) '(vc . "/home/user/myproject/")))
+              ((symbol-function 'project-root)
+               (lambda (_) "/home/user/myproject/")))
+      (should (equal (pilish--session-directory) "/home/user/myproject/")))))
+
+(ert-deftest pilish-test-session-directory-falls-back-to-default ()
+  "Session directory is default-directory when not in a project."
+  (let ((default-directory "/tmp/somedir/"))
+    (cl-letf (((symbol-function 'project-current)
+               (lambda (&rest _) nil)))
+      (should (equal (pilish--session-directory) "/tmp/somedir/")))))
+
+(ert-deftest pilish-test-session-directory-preserves-multi-hop-root ()
+  "Session directory detection keeps multi-hop TRAMP project roots intact."
+  (let ((default-directory "/tmp/"))
+    (cl-letf (((symbol-function 'project-current)
+               (lambda (&rest _)
+                 '(vc . "/ssh:bastion|sudo:root@pi-host:/srv/project/")))
+              ((symbol-function 'project-root)
+               (lambda (_)
+                 "/ssh:bastion|sudo:root@pi-host:/srv/project/")))
+      (should (equal (pilish--session-directory)
+                     "/ssh:bastion|sudo:root@pi-host:/srv/project/")))))
+
+(ert-deftest pilish-test-session-directory-recovers-projectile-root ()
+  "Recovers root when a backend returns a cons cell with no `project-root'.
+Older projectile returns (projectile . DIR) but defines no method, raising
+`cl-no-applicable-method' (issue #234)."
+  (let ((default-directory "/tmp/"))
+    (cl-letf (((symbol-function 'project-current)
+               (lambda (&rest _) (cons 'projectile "/home/user/proj/")))
+              ((symbol-function 'project-root)
+               (lambda (_proj)
+                 (signal 'cl-no-applicable-method
+                         (list 'project-root
+                               (cons 'projectile "/home/user/proj/"))))))
+      (should (equal (pilish--session-directory) "/home/user/proj/")))))
+
+(ert-deftest pilish-test-session-directory-survives-malformed-backend ()
+  "Degrades to `default-directory' when a backend's root can't be found.
+Closes the category from issue #234: any instance without a usable
+`(SYMBOL . DIR)' shape must not crash session startup."
+  (let ((default-directory "/tmp/somedir/"))
+    (cl-letf (((symbol-function 'project-current)
+               (lambda (&rest _) (vector 'weird-backend)))
+              ((symbol-function 'project-root)
+               (lambda (_proj)
+                 (signal 'cl-no-applicable-method
+                         (list 'project-root
+                               (vector 'weird-backend))))))
+      (should (equal (pilish--session-directory) "/tmp/somedir/")))))
+
+;;; Buffer Linkage
+
+(defvar-local pilish-test--activity-marker nil
+  "Buffer-local marker used by activity-phase hook tests.")
+
+(ert-deftest pilish-test-input-buffer-finds-chat ()
+  "Input buffer can find associated chat buffer."
+  (pilish-test-with-mock-session "/tmp/pilish-test-link1/"
+    (with-current-buffer "*pilish-input:/tmp/pilish-test-link1/*"
+      (should (eq (pilish--get-chat-buffer)
+                  (get-buffer "*pilish-chat:/tmp/pilish-test-link1/*"))))))
+
+(ert-deftest pilish-test-chat-buffer-finds-input ()
+  "Chat buffer can find associated input buffer."
+  (pilish-test-with-mock-session "/tmp/pilish-test-link2/"
+    (with-current-buffer "*pilish-chat:/tmp/pilish-test-link2/*"
+      (should (eq (pilish--get-input-buffer)
+                  (get-buffer "*pilish-input:/tmp/pilish-test-link2/*"))))))
+
+(ert-deftest pilish-test-activity-phase-functions-receive-session-buffers ()
+  "Activity phase functions receive buffers, phases, and reason."
+  (let ((calls nil)
+        (dir "/tmp/pilish-test-activity-hook/"))
+    (pilish-test-with-mock-session dir
+      (let ((chat (get-buffer (pilish--buffer-name :chat dir)))
+            (input (get-buffer (pilish--buffer-name :input dir)))
+            (pilish-activity-phase-functions
+             (list (lambda (chat-buf input-buf old-phase new-phase reason)
+                     (push (list chat-buf input-buf old-phase new-phase reason)
+                           calls)))))
+        (with-current-buffer chat
+          (pilish--set-activity-phase "thinking")
+          (pilish--set-activity-phase "thinking"))
+        (should (= (length calls) 1))
+        (pcase-let ((`(,seen-chat ,seen-input ,old-phase ,new-phase ,reason)
+                     (car calls)))
+          (should (eq seen-chat chat))
+          (should (eq seen-input input))
+          (should (equal old-phase "idle"))
+          (should (equal new-phase "thinking"))
+          (should (eq reason 'phase-change)))))))
+
+(ert-deftest pilish-test-reset-session-state-forces-idle-activity-phase ()
+  "Session reset applies idle even when user display state needs resync."
+  (let ((calls nil)
+        (dir "/tmp/pilish-test-activity-reset/"))
+    (pilish-test-with-mock-session dir
+      (let ((chat (get-buffer (pilish--buffer-name :chat dir)))
+            (input (get-buffer (pilish--buffer-name :input dir)))
+            (pilish-activity-phase-functions
+             (list (lambda (chat-buf input-buf old-phase new-phase reason)
+                     (push (list chat-buf input-buf old-phase new-phase reason)
+                           calls)))))
+        (with-current-buffer chat
+          (pilish--set-activity-phase "running")
+          (setq calls nil)
+          (pilish--reset-session-state))
+        (should (= (length calls) 1))
+        (pcase-let ((`(,seen-chat ,seen-input ,old-phase ,new-phase ,reason)
+                     (car calls)))
+          (should (eq seen-chat chat))
+          (should (eq seen-input input))
+          (should (equal old-phase "running"))
+          (should (equal new-phase "idle"))
+          (should (eq reason 'reset)))))))
+
+(ert-deftest pilish-test-set-input-buffer-resyncs-activity-phase ()
+  "Relinking an input buffer reapplies the current activity phase."
+  (let ((calls nil)
+        (dir "/tmp/pilish-test-activity-relink/")
+        (new-input (generate-new-buffer " *pi-activity-relink-input*")))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let ((chat (get-buffer (pilish--buffer-name :chat dir)))
+                (pilish-activity-phase-functions
+                 (list (lambda (chat-buf input-buf old-phase new-phase reason)
+                         (push (list chat-buf input-buf old-phase new-phase reason)
+                               calls)))))
+            (with-current-buffer chat
+              (pilish--set-activity-phase "running")
+              (setq calls nil)
+              (pilish--set-input-buffer new-input))
+            (pcase-let ((`(,seen-chat ,seen-input ,old-phase ,new-phase ,reason)
+                         (cl-find-if (lambda (call)
+                                       (eq (cadr call) new-input))
+                                     calls)))
+              (should (eq seen-chat chat))
+              (should (eq seen-input new-input))
+              (should (equal old-phase "running"))
+              (should (equal new-phase "running"))
+              (should (eq reason 'input-link)))))
+      (when (buffer-live-p new-input)
+        (kill-buffer new-input)))))
+
+(ert-deftest pilish-test-set-input-buffer-clears-old-input-activity ()
+  "Relinking input buffers lets hooks clean state from the old input."
+  (let ((dir "/tmp/pilish-test-activity-relink-cleanup/")
+        (new-input (generate-new-buffer " *pi-activity-relink-cleanup-input*")))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let ((chat (get-buffer (pilish--buffer-name :chat dir)))
+                (old-input (get-buffer (pilish--buffer-name :input dir)))
+                (pilish-activity-phase-functions
+                 (list (lambda (_chat-buf input-buf _old-phase new-phase reason)
+                         (when (buffer-live-p input-buf)
+                           (with-current-buffer input-buf
+                             (cond
+                              ((eq reason 'input-unlink)
+                               (setq pilish-test--activity-marker nil))
+                              ((not (equal new-phase "idle"))
+                               (setq pilish-test--activity-marker t)))))))))
+            (with-current-buffer chat
+              (pilish--set-activity-phase "running"))
+            (with-current-buffer old-input
+              (should pilish-test--activity-marker))
+            (with-current-buffer chat
+              (pilish--set-input-buffer new-input))
+            (with-current-buffer old-input
+              (should-not pilish-test--activity-marker))
+            (with-current-buffer new-input
+              (should pilish-test--activity-marker))))
+      (when (buffer-live-p new-input)
+        (kill-buffer new-input)))))
+
+(ert-deftest pilish-test-activity-phase-reason-distinguishes-relink-from-idle ()
+  "Relinking input buffers does not look like a real idle transition."
+  (let ((finished-notifications 0)
+        (dir "/tmp/pilish-test-activity-relink-reason/")
+        (new-input (generate-new-buffer " *pi-activity-relink-reason-input*")))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let ((chat (get-buffer (pilish--buffer-name :chat dir)))
+                (pilish-activity-phase-functions
+                 (list (lambda (_chat-buf _input-buf old-phase new-phase reason)
+                         (when (and (eq reason 'phase-change)
+                                    (not (equal old-phase "idle"))
+                                    (equal new-phase "idle"))
+                           (setq finished-notifications
+                                 (1+ finished-notifications)))))))
+            (with-current-buffer chat
+              (pilish--set-activity-phase "running")
+              (pilish--set-input-buffer new-input))
+            (should (= finished-notifications 0))
+            (with-current-buffer chat
+              (pilish--set-activity-phase "idle"))
+            (should (= finished-notifications 1))))
+      (when (buffer-live-p new-input)
+        (kill-buffer new-input)))))
+
+(ert-deftest pilish-test-chat-buffer-kill-forces-teardown-activity-phase ()
+  "Killing a chat buffer applies idle with teardown as the reason."
+  (let ((calls nil)
+        (dir "/tmp/pilish-test-activity-teardown/"))
+    (pilish-test-with-mock-session dir
+      (let ((chat (get-buffer (pilish--buffer-name :chat dir)))
+            (input (get-buffer (pilish--buffer-name :input dir)))
+            (pilish-activity-phase-functions
+             (list (lambda (chat-buf input-buf old-phase new-phase reason)
+                     (push (list chat-buf input-buf old-phase new-phase reason)
+                           calls)))))
+        (with-current-buffer chat
+          (pilish--set-activity-phase "running"))
+        (setq calls nil)
+        (kill-buffer chat)
+        (pcase-let ((`(,seen-chat ,seen-input ,old-phase ,new-phase ,reason)
+                     (cl-find-if (lambda (call)
+                                   (and (eq (nth 4 call) 'teardown)
+                                        (equal (nth 2 call) "running")
+                                        (equal (nth 3 call) "idle")))
+                                 calls)))
+          (should (eq seen-chat chat))
+          (should (or (null seen-input)
+                      (eq seen-input input)))
+          (should (equal old-phase "running"))
+          (should (equal new-phase "idle"))
+          (should (eq reason 'teardown)))))))
+
+(ert-deftest pilish-test-get-process-from-chat ()
+  "Can get process from chat buffer."
+  (let ((default-directory "/tmp/pilish-test-proc1/")
+        (fake-proc 'mock-process))
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) fake-proc))
+              ((symbol-function 'pilish--display-buffers) #'ignore))
+      (unwind-protect
+          (progn
+            (pilish)
+            (with-current-buffer "*pilish-chat:/tmp/pilish-test-proc1/*"
+              (should (eq (pilish--get-process) fake-proc))))
+        (ignore-errors (kill-buffer "*pilish-chat:/tmp/pilish-test-proc1/*"))
+        (ignore-errors (kill-buffer "*pilish-input:/tmp/pilish-test-proc1/*"))))))
+
+(ert-deftest pilish-test-get-process-from-input ()
+  "Can get process from input buffer via chat buffer."
+  (let ((default-directory "/tmp/pilish-test-proc2/")
+        (fake-proc 'mock-process))
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) fake-proc))
+              ((symbol-function 'pilish--display-buffers) #'ignore))
+      (unwind-protect
+          (progn
+            (pilish)
+            (with-current-buffer "*pilish-input:/tmp/pilish-test-proc2/*"
+              (should (eq (pilish--get-process) fake-proc))))
+        (ignore-errors (kill-buffer "*pilish-chat:/tmp/pilish-test-proc2/*"))
+        (ignore-errors (kill-buffer "*pilish-input:/tmp/pilish-test-proc2/*"))))))
+
+(ert-deftest pilish-test-display-buffers-uses-current-frame-window-list ()
+  "`pilish--display-buffers' should query windows in current frame only."
+  (let ((root "/tmp/pilish-test-display-frame-local/")
+        (all-frames-args nil))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat))
+                 (orig-get-buffer-window-list (symbol-function 'get-buffer-window-list)))
+            (delete-other-windows)
+            (cl-letf (((symbol-function 'get-buffer-window-list)
+                       (lambda (buffer minibuf &optional all-frames)
+                         (push all-frames all-frames-args)
+                         (funcall orig-get-buffer-window-list buffer minibuf all-frames))))
+              (pilish--display-buffers chat input))
+            (should-not (memq t all-frames-args)))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-code-fences-never-prompt-to-install-grammars ()
+  "Rendering a fence for a missing grammar never asks to install it."
+  (skip-unless (and (boundp 'treesit-auto-install-grammar)
+                    (treesit-language-available-p 'markdown)
+                    (not (treesit-language-available-p 'python))))
+  (let (prompts)
+    (cl-letf (((symbol-function 'y-or-n-p)
+               (lambda (prompt &rest _) (push prompt prompts) nil))
+              ((symbol-function 'yes-or-no-p)
+               (lambda (prompt &rest _) (push prompt prompts) nil)))
+      (dolist (mode '(pilish-chat-mode pilish-snapshot-mode pilish-input-mode))
+        (with-temp-buffer
+          (let ((treesit-auto-install-grammar 'ask))
+            (funcall mode)
+            (let ((inhibit-read-only t))
+              (insert "Text\n\n```python\nprint(1)\n```\n"))
+            ;; Without the restriction this prompts, then signals a
+            ;; missing-grammar parser error.
+            (treesit-update-ranges (point-min) (point-max))
+            (font-lock-ensure)
+            (should (treesit-parser-list nil 'markdown))))))
+    (should-not prompts)))
+
+(ert-deftest pilish-test-reply-details-shared-transcript-keys ()
+  "Only transcripts remap local help to completed-block inspection."
+  (should-not (lookup-key pilish-transcript-mode-map (kbd "C-c C-d")))
+  (dolist (mode '(pilish-chat-mode pilish-snapshot-mode))
+    (with-temp-buffer
+      (funcall mode)
+      (should-not (key-binding (kbd "C-c C-d")))
+      (should (eq (key-binding (kbd "C-h .")) #'pilish--transcript-local-help))))
+  (with-temp-buffer
+    (pilish-input-mode)
+    (should-not (key-binding (kbd "C-c C-d")))
+    (should (eq (key-binding (kbd "C-h .")) #'display-local-help))))
+
+(ert-deftest pilish-test-chat-mode-map-binds-commands ()
+  "Chat mode map binds abort, session, context, model, and info chords."
+  (dolist (expected '(("C-c C-k" . pilish-abort-or-tree-browser)
+                      ("C-c C-n" . pilish-new-session)
+                      ("C-c C-r" . pilish-session-browser)
+                      ("C-c C-e" . pilish-export-html)
+                      ("C-c C-c" . pilish-compact)
+                      ("C-c C-m" . pilish-select-model)
+                      ("C-c C-t" . pilish-cycle-thinking)
+                      ("C-c C-y" . pilish-copy-last-message)))
+    (should (eq (lookup-key pilish-chat-mode-map
+                            (kbd (car expected)))
+                (cdr expected)))))
+
+(ert-deftest pilish-test-display-buffers-soft-dedicates-input-window ()
+  "Input window should be soft-dedicated so `display-buffer' skips it."
+  (let ((root "/tmp/pilish-test-dedicated/"))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--display-buffers chat input)
+            (should (eq 'side (window-dedicated-p
+                               (get-buffer-window input)))))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-display-buffers-chat-only-when-show-input-nil ()
+  "SHOW-INPUT nil displays only the chat window."
+  (let ((root "/tmp/pilish-test-display-chat-only/"))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--display-buffers chat input t)
+            (should (get-buffer-window chat))
+            (should-not (get-buffer-window input)))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-open-input-splits-below-chat ()
+  "`pilish-open-input' opens a soft-dedicated input window below chat."
+  (let ((root "/tmp/pilish-test-open-input-split/"))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--display-buffers chat input t)
+            (select-window (get-buffer-window chat))
+            (pilish-open-input)
+            (let ((input-win (get-buffer-window input)))
+              (should input-win)
+              (should (eq (selected-window) input-win))
+              (should (eq 'side (window-dedicated-p input-win)))
+              (should (eq (window-in-direction 'above input-win)
+                          (get-buffer-window chat)))))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-split-input-window-function-routes-every-split ()
+  "The session layout and `pilish-open-input' split through one function.
+A wrapper installed with `add-function' sees each split and decides the
+window; the default still splits below the chat."
+  (let ((root "/tmp/pilish-test-split-input-routing/")
+        (calls nil)
+        (pilish-split-input-window-function pilish-split-input-window-function))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) #'ignore))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat))
+                 (route (lambda (split chat-win input-buf)
+                          (push (list (window-buffer chat-win) input-buf) calls)
+                          (funcall split chat-win input-buf))))
+            (add-function :around pilish-split-input-window-function route)
+            (delete-other-windows)
+            (pilish--display-buffers chat input)
+            (should (equal calls (list (list chat input))))
+            (let ((input-win (get-buffer-window input)))
+              (should (eq (window-in-direction 'above input-win)
+                          (get-buffer-window chat)))
+              (delete-window input-win))
+            (select-window (get-buffer-window chat))
+            (pilish-open-input)
+            (should (equal calls (list (list chat input) (list chat input))))
+            (should (eq (selected-window) (get-buffer-window input))))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-split-input-window-function-can-place-the-input ()
+  "A replacement split function chooses the input window Pilish selects."
+  (let ((root "/tmp/pilish-test-split-input-placement/"))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) #'ignore))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat))
+                 (pilish-split-input-window-function
+                  (lambda (chat-win input-buf)
+                    (let ((window (split-window chat-win nil 'right)))
+                      (set-window-buffer window input-buf)
+                      window))))
+            (delete-other-windows)
+            (pilish--display-buffers chat input t)
+            (select-window (get-buffer-window chat))
+            (pilish-open-input)
+            (should (eq (selected-window) (get-buffer-window input)))
+            (should (eq (window-in-direction 'left (selected-window))
+                        (get-buffer-window chat))))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-split-input-window-refuses-small-chat-window ()
+  "The default split returns nil for a chat window too small to split."
+  (save-window-excursion
+    (delete-other-windows)
+    (let* ((small (split-window nil (- (window-total-height) window-min-height)))
+           (input (generate-new-buffer " *pilish-split-input*")))
+      (unwind-protect
+          (progn
+            (should-not (pilish--window-can-split-for-input-p small))
+            (should-not (pilish-split-input-window small input))
+            (should-not (get-buffer-window input)))
+        (kill-buffer input)))))
+
+(ert-deftest pilish-test-open-input-focuses-visible-input ()
+  "`pilish-open-input' selects an already-visible input window."
+  (let ((root "/tmp/pilish-test-open-input-focus/"))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--display-buffers chat input)
+            (select-window (get-buffer-window chat))
+            (pilish-open-input)
+            (should (eq (selected-window) (get-buffer-window input)))
+            (should (= 2 (length (window-list nil 'no-mini)))))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-chat-i-opens-and-focuses-input ()
+  "Pressing `i' in the chat window opens and focuses the input window.
+The gesture works without the Evil integration, mirroring
+`pilish-evil-insert-input'."
+  (let ((root "/tmp/pilish-test-chat-i-open-input/"))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process)
+               (lambda (_ &optional _args _environment) nil)))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--display-buffers chat input t)
+            (select-window (get-buffer-window chat))
+            (should (eq (key-binding "i") #'pilish-open-input))
+            ;; `i' from a chat-only layout opens a soft-dedicated input
+            ;; window below the chat window and selects it.
+            (execute-kbd-macro "i")
+            (let ((input-win (get-buffer-window input)))
+              (should input-win)
+              (should (eq (selected-window) input-win))
+              (should (eq 'side (window-dedicated-p input-win)))
+              ;; From the chat window with input visible, `i' focuses the
+              ;; existing input window instead of splitting another one.
+              (select-window (get-buffer-window chat))
+              (execute-kbd-macro "i")
+              (should (eq (selected-window) (get-buffer-window input)))
+              (should (= 2 (length (window-list nil 'no-mini))))))
+          (pilish-test--kill-session-buffers root)
+          (delete-other-windows)))))
+
+(ert-deftest pilish-test-send-hides-input-window-on-demand ()
+  "Sending hides the input window when display is `on-demand'."
+  (let ((root "/tmp/pilish-test-send-hide/")
+        (pilish-input-window-display 'on-demand))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--prepare-and-send) #'ignore))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--display-buffers chat input)
+            (with-current-buffer input
+              (insert "Hello, pi!")
+              (pilish-send))
+            (should-not (get-buffer-window input))
+            (should (eq (selected-window) (get-buffer-window chat))))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-send-keeps-input-window-when-always ()
+  "Sending keeps the input window when display is `always'."
+  (let ((root "/tmp/pilish-test-send-keep/")
+        (pilish-input-window-display 'always))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--prepare-and-send) #'ignore))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--display-buffers chat input)
+            (with-current-buffer input
+              (insert "Hello, pi!")
+              (pilish-send))
+            (should (get-buffer-window input)))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-show-session-buffers-hidden-launches-chat-only ()
+  "A fresh session launches chat-only when display is `hidden'.
+`pilish--show-session-buffers' honors
+`pilish-input-window-display', so a `hidden' session starts
+without an input window."
+  (let ((root "/tmp/pilish-test-show-hidden/")
+        (pilish-input-window-display 'hidden))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--show-session-buffers chat input)
+            (should (get-buffer-window chat))
+            (should-not (get-buffer-window input)))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-send-hides-input-window-when-hidden ()
+  "Sending hides the input window when display is `hidden'."
+  (let ((root "/tmp/pilish-test-send-hide-hidden/")
+        (pilish-input-window-display 'hidden))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--prepare-and-send) #'ignore))
+      (unwind-protect
+          (let* ((chat (pilish--setup-session root nil))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (delete-other-windows)
+            (pilish--display-buffers chat input)
+            (with-current-buffer input
+              (insert "Hello, pi!")
+              (pilish-send))
+            (should-not (get-buffer-window input))
+            (should (eq (selected-window) (get-buffer-window chat))))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+(ert-deftest pilish-test-hide-session-windows-uses-current-frame-window-list ()
+  "`pilish--hide-session-windows' should query current frame windows only."
+  (let ((root "/tmp/pilish-test-hide-frame-local/")
+        (all-frames-args nil))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+      (unwind-protect
+          (progn
+            (delete-other-windows)
+            (switch-to-buffer "*scratch*")
+            (setq default-directory root)
+            (pilish)
+            (let ((chat (get-buffer (pilish-test--chat-buffer-name root)))
+                  (orig-get-buffer-window-list (symbol-function 'get-buffer-window-list)))
+              (with-current-buffer chat
+                (cl-letf (((symbol-function 'get-buffer-window-list)
+                           (lambda (buffer minibuf &optional all-frames)
+                             (push all-frames all-frames-args)
+                             (funcall orig-get-buffer-window-list buffer minibuf all-frames))))
+                  (pilish--hide-session-windows)))
+              (should-not (memq t all-frames-args))))
+        (pilish-test--kill-session-buffers root)
+        (delete-other-windows)))))
+
+;;; Chat Keymap
+
+(ert-deftest pilish-test-chat-mode-inherits-transcript-bindings ()
+  "Chat keeps shared transcript navigation and activation bindings."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (dolist (binding '(("n" . pilish-next-message)
+                       ("p" . pilish-previous-message)
+                       ("RET" . pilish-visit-file)
+                       ("<return>" . pilish-visit-file)
+                       ("TAB" . pilish-toggle-tool-section)
+                       ("<tab>" . pilish-toggle-tool-section)))
+      (should (eq (key-binding (kbd (car binding))) (cdr binding))))
+    (should (eq (command-remapping #'push-button) #'pilish--dispatch-button))))
+
+(ert-deftest pilish-test-chat-mode-map-shell-command-at-point ()
+  "The chat `!' key runs one file command without changing other actions."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/tmp/project/")
+    (let ((inhibit-read-only t))
+      (insert "src/report.el"))
+    (goto-char (+ (point-min) 2))
+    (let (prompt command command-directory)
+      (cl-letf (((symbol-function 'read-shell-command)
+                 (lambda (value)
+                   (setq prompt value)
+                   "file *"))
+                ((symbol-function 'shell-command)
+                 (lambda (value)
+                   (setq command value
+                         command-directory default-directory))))
+        (let ((binding (key-binding (kbd "!"))))
+          (should (eq binding #'pilish-shell-command-at-point))
+          (call-interactively binding)))
+      (should (equal "! on src/report.el: " prompt))
+      (should (equal "file /tmp/project/src/report.el" command))
+      (should (equal "/tmp/project/" command-directory)))
+    (should (eq (lookup-key pilish-chat-mode-map (kbd "RET"))
+                #'pilish-visit-file))
+    (should (eq (lookup-key pilish-chat-mode-map
+                            [remap push-button])
+                #'pilish--dispatch-button))
+    (dolist (key '("&" "E" "o"))
+      (should-not (lookup-key pilish-chat-mode-map (kbd key))))))
+
+(ert-deftest pilish-test-chat-mode-map-copy-file-path ()
+  "The chat `w' key copies the same shell-local path used by `!'."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/tmp/project/")
+    (let ((inhibit-read-only t))
+      (insert "src/report.el:7"))
+    (goto-char (+ (point-min) 2))
+    (let ((kill-ring nil)
+          (kill-ring-yank-pointer nil)
+          (messages nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (push (apply #'format fmt args) messages))))
+        (let ((binding (key-binding (kbd "w"))))
+          (should (eq binding #'pilish-copy-file-path))
+          (call-interactively binding)))
+      (should (equal (car kill-ring) "/tmp/project/src/report.el"))
+      (should (member "Pi: Copied /tmp/project/src/report.el" messages)))))
+
+;;; Startup Header
+
+(ert-deftest pilish-test-startup-header-shows-keybindings ()
+  "Startup header includes key keybindings."
+  (let ((header (pilish--format-startup-header)))
+    (should (string-match-p "C-c C-c" header))
+    (should (string-match-p "send" header))
+    (should (string-match-p "C-c C-r   sessions" header))
+    (should (string-match-p "C-c C-p   menu\n\npilish" header))))
+
+(ert-deftest pilish-test-startup-header-shows-label ()
+  "Startup header labels the buffer with the project title."
+  (let ((header (pilish--format-startup-header)))
+    (should (string-equal "Pilish" (car (split-string header "\n"))))))
+
+;;;; Startup Logo
+
+(ert-deftest pilish-test-startup-header-decorates-heading-with-logo ()
+  "Startup heading carries the logo as a display-only line-prefix.
+The raw separator text stays byte-identical; the property covers the
+label line through its newline and never the setext underline."
+  (let ((header (pilish--format-startup-header)))
+    (should (string-equal "Pilish\n======\n"
+                          (substring-no-properties header 0 14)))
+    (should (get-text-property 0 'line-prefix header))
+    (should (get-text-property 6 'line-prefix header))
+    (should-not (get-text-property 7 'line-prefix header))))
+
+(ert-deftest pilish-test-logo-file-form-evaluates-without-load-file-name ()
+  "The `pilish--logo-file' form evaluates when `load-file-name' is nil.
+Covers the eval-buffer/eval-region dev flow over already-loaded
+Pilish: the fallback chain must answer via `symbol-file' without
+signaling, or evaluation of pilish-ui.el aborts at the defconst."
+  (let* ((lib (or (symbol-file 'pilish--make-separator 'defun)
+                  (locate-library "pilish-ui")))
+         (source (and lib
+                      (if (string-suffix-p ".elc" lib)
+                          (concat (substring lib 0 -1))
+                        lib))))
+    (if (not (and source (file-exists-p source)))
+        (ert-skip "pilish-ui.el source not readable")
+      (let ((form (catch 'found
+                    (with-temp-buffer
+                      (insert-file-contents source)
+                      (goto-char (point-min))
+                      (condition-case nil
+                          (while t
+                            (let ((f (read (current-buffer))))
+                              (when (eq (nth 1 f) 'pilish--logo-file)
+                                (throw 'found f))))
+                        (end-of-file)))))
+            (load-file-name nil))
+        (should (eq 'defconst (car-safe form)))
+        (let ((value (eval (nth 2 form))))
+          (should (stringp value))
+          (should (file-name-absolute-p value))
+          (should (string-suffix-p "assets/pilish-logo.svg" value)))))))
+
+(defun pilish-test--startup-logo-glyph-specs (prefix)
+  "Return the two display specs of logo PREFIX for structural checks."
+  (mapcar (lambda (i) (get-text-property i 'display prefix)) '(0 1)))
+
+(ert-deftest pilish-test-startup-logo-prefix-structure ()
+  "Logo prefix glyphs are conditional and collapse on plain displays.
+Each glyph's display value pairs a `(when ...)' spec gated on
+`pilish--startup-logo-displayable-p' with a zero-width space fallback,
+so text terminals and no-SVG displays show neither logo nor gap.  The
+image glyph renders the shipped asset adapted for theme matching: no
+backplate, currentColor body, violet horns kept, 1.5em height."
+  (let* ((header (pilish--format-startup-header))
+         (prefix (get-text-property 0 'line-prefix header))
+         (specs (pilish-test--startup-logo-glyph-specs prefix)))
+    (should (stringp prefix))
+    (should (= 2 (length prefix)))
+    (dolist (i '(0 1))
+      (should (eq 'md-ts-heading-1 (get-text-property i 'face prefix))))
+    ;; Inert decoration: no interactive properties on either glyph.
+    (dolist (i '(0 1))
+      (should-not (get-text-property i 'keymap prefix))
+      (should-not (get-text-property i 'mouse-face prefix))
+      (should-not (get-text-property i 'help-echo prefix)))
+    (pcase-let ((`(,logo-display ,gap-display) specs))
+      (dolist (display (list logo-display gap-display))
+        (let ((conditional (nth 0 display))
+              (fallback (nth 1 display)))
+          (should (eq 'when (car conditional)))
+          (should (equal '(pilish--startup-logo-displayable-p)
+                         (nth 1 conditional)))
+          (should (equal '(space . (:width 0)) fallback))))
+      (let* ((logo-conditional (nth 0 logo-display))
+             (payload (nthcdr 2 logo-conditional)))
+        (should (eq 'image (car payload)))
+        (should (eq 'svg (plist-get (cdr payload) :type)))
+        (should (equal '(1.5 . em) (plist-get (cdr payload) :height)))
+        (should (eq 1 (plist-get (cdr payload) :scale)))
+        (should (eq 'center (plist-get (cdr payload) :ascent)))
+        (let ((data (plist-get (cdr payload) :data)))
+          (should (string-match-p "currentColor" data))
+          (should (string-match-p "#A970FF" data))
+          (should-not (string-match-p "#EEF2E8" data))
+          (should-not (string-match-p "#07100F" data))
+          (should-not (string-match-p "<rect" data))))
+      (should (equal '(space . (:width 0.75))
+                     (nthcdr 2 (nth 0 gap-display)))))))
+
+(ert-deftest pilish-test-startup-logo-displayable-p-gates-both-display-and-svg ()
+  "The predicate needs image display AND SVG support.
+Batch Emacs reports SVG available with no display, so either alone
+must not enable the logo."
+  (cl-letf (((symbol-function 'display-images-p) (lambda (&optional _f) t))
+            ((symbol-function 'image-type-available-p) (lambda (&optional _t) t)))
+    (should (pilish--startup-logo-displayable-p)))
+  (cl-letf (((symbol-function 'display-images-p) (lambda (&optional _f) nil))
+            ((symbol-function 'image-type-available-p) (lambda (&optional _t) t)))
+    (should-not (pilish--startup-logo-displayable-p)))
+  (cl-letf (((symbol-function 'display-images-p) (lambda (&optional _f) t))
+            ((symbol-function 'image-type-available-p) (lambda (&optional _t) nil)))
+    (should-not (pilish--startup-logo-displayable-p))))
+
+(ert-deftest pilish-test-startup-header-omits-logo-when-asset-missing ()
+  "Missing asset means a plain heading: no prefix, no error, no warning."
+  (let ((pilish--logo-file "/nonexistent/pilish-logo.svg")
+        (pilish--logo-svg-cache nil)
+        (warnings nil))
+    (cl-letf (((symbol-function 'display-warning)
+               (lambda (&rest args) (push args warnings))))
+      (let ((header (pilish--format-startup-header)))
+        (should (string-equal "Pilish\n======\n"
+                              (substring-no-properties header 0 14)))
+        (should-not (get-text-property 0 'line-prefix header))
+        (should (null warnings))))))
+
+(ert-deftest pilish-test-startup-header-logo-preserves-copy-and-single-decoration ()
+  "Displayed startup header copies as plain text with one decoration.
+The filtered copy still returns the bare heading; exactly one heading
+carries the prefix; font-lock-ensure keeps the decoration and the
+heading face in place."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let ((inhibit-read-only t))
+      (insert (pilish--format-startup-header)))
+    (font-lock-ensure)
+    (should (equal "Pilish\n" (pilish--filter-buffer-substring 1 8)))
+    (should (equal "Pilish\n======"
+                   (buffer-substring-no-properties 1 14)))
+    (let ((decorated 0) (pos (point-min)))
+      (while (< pos (point-max))
+        (when (and (get-text-property pos 'line-prefix)
+                   (not (get-text-property pos 'pilish-disclosure-hit)))
+          (cl-incf decorated))
+        (setq pos (1+ pos)))
+      (should (= 7 decorated))
+      (should (eq 'md-ts-heading-1 (get-text-property 1 'face))))))
+
+(defun pilish-test--banner-commands ()
+  "Return a command fixture with two prompts and two skills."
+  (list '(:name "create-todo" :description "New todo" :source "prompt")
+        '(:name "fix-tests" :description "Fix tests" :source "prompt")
+        '(:name "skill:aws-sso" :description "AWS SSO" :source "skill")
+        '(:name "skill:uv" :description "uv runner" :source "skill")))
+
+(ert-deftest pilish-test-startup-header-shows-summary-line ()
+  "Startup header ends with a compact summary line after the keybindings.
+Counts come from `pilish--commands' and the pi version from
+`pilish--process-version'."
+  (let ((dir (pilish-test--make-temp-directory "pilish-test-banner-summary-")))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let ((chat (get-buffer (pilish-test--chat-buffer-name dir))))
+            (with-current-buffer chat
+              (setq pilish--process-version "0.84.2"
+                    pilish--commands (pilish-test--banner-commands))
+              (pilish--display-startup-header)
+              (should (string-match-p
+                       (regexp-quote
+                        (format "pi v0.84.2 · pilish %s · 2 skills · 2 prompts"
+                                pilish-version))
+                       (buffer-string))))))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-startup-header-omits-missing-summary-data ()
+  "Summary line drops the pi version and count segments when data is missing.
+Never renders misleading zero counts."
+  (let ((dir (pilish-test--make-temp-directory "pilish-test-banner-omitted-")))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let* ((chat (get-buffer (pilish-test--chat-buffer-name dir)))
+                 (text (with-current-buffer chat (buffer-string)))
+                 (lines (split-string text "\n")))
+            (should (member (format "pilish %s" pilish-version)
+                            lines))
+            (should-not (string-match-p "pi v" text))
+            (should-not (string-match-p "[0-9]+ skills" text))
+            (should-not (string-match-p "[0-9]+ prompts" text))))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-refresh-startup-banner-fills-summary-line ()
+  "Refreshing the banner replaces the summary line in place, idempotently."
+  (let ((dir (pilish-test--make-temp-directory "pilish-test-banner-refresh-")))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let ((chat (get-buffer (pilish-test--chat-buffer-name dir))))
+            (with-current-buffer chat
+              ;; The mock session displayed the banner with no data yet.
+              (setq pilish--process-version "0.84.2")
+              (pilish--set-commands (pilish-test--banner-commands))
+              (pilish--refresh-startup-banner)
+              (should (string-match-p
+                       (regexp-quote
+                        (format "pi v0.84.2 · pilish %s · 2 skills · 2 prompts"
+                                pilish-version))
+                       (buffer-string)))
+              (should-not (member (format "pilish %s" pilish-version)
+                                  (split-string (buffer-string) "\n")))
+              (let ((after-first (buffer-string)))
+                (pilish--refresh-startup-banner)
+                (should (equal (buffer-string) after-first))))))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-refresh-startup-banner-noop-without-banner ()
+  "Refreshing the banner is a no-op when the buffer shows no banner."
+  (let ((dir (pilish-test--make-temp-directory "pilish-test-banner-noop-")))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let ((chat (get-buffer (pilish-test--chat-buffer-name dir))))
+            (with-current-buffer chat
+              (let ((inhibit-read-only t))
+                (erase-buffer))
+              ;; Must not signal and must not insert anything.
+              (pilish--refresh-startup-banner)
+              (should-not (string-match-p "TAB details" (buffer-string))))))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-startup-context-files-scan ()
+  "Context scan walks up from DIRECTORY collecting AGENTS-family files.
+The user-level file comes first, then nearest directory first walking
+upward; in a given directory AGENTS.override.md wins and shadows the
+other family names there."
+  (let* ((root (pilish-test--make-temp-directory "pilish-test-banner-context-"))
+         (user-dir (expand-file-name "home" root))
+         (walk-dir (expand-file-name "walk" root))
+         (sub-dir (expand-file-name "sub" walk-dir))
+         (proj-dir (expand-file-name "proj" sub-dir))
+         (user-file (expand-file-name "AGENTS.md" user-dir))
+         (proj-file (expand-file-name "CLAUDE.md" proj-dir))
+         (override-file (expand-file-name "AGENTS.override.md" sub-dir))
+         (walk-file (expand-file-name "AGENTS.md" walk-dir)))
+    (make-directory user-dir t)
+    (make-directory proj-dir t)
+    ;; sub-dir carries both the override and a plain AGENTS.md; only the
+    ;; override may be reported.
+    (dolist (file (list user-file proj-file override-file
+                        (expand-file-name "AGENTS.md" sub-dir) walk-file))
+      (with-temp-file file (insert "agents\n")))
+    (unwind-protect
+        (let ((scan-directory (symbol-function 'pilish--startup-context-file-in-dir)))
+          (cl-letf (((symbol-function 'pilish--startup-context-file-in-dir)
+                     (lambda (directory)
+                       (when (string-prefix-p (file-name-as-directory root)
+                                              (file-name-as-directory directory))
+                         (funcall scan-directory directory)))))
+            (should (equal (pilish--startup-context-files proj-dir user-dir)
+                           (list user-file proj-file override-file walk-file)))))
+      (delete-directory root t))))
+
+(ert-deftest pilish-test-extract-pi-version-from-clean-output ()
+  "Extract the plain semantic version returned by pi."
+  (should (equal (pilish--extract-pi-version "0.79.1\n")
+                 "0.79.1")))
+
+(ert-deftest pilish-test-extract-pi-version-from-stderr-style-output ()
+  "Ignore npm warnings and extract the standalone pi version line."
+  (should (equal (pilish--extract-pi-version
+                  "npm warn deprecated package@1.0.0: old\n0.79.1\n")
+                 "0.79.1")))
+
+(ert-deftest pilish-test-extract-pi-version-returns-nil-for-unparseable-output ()
+  "Unparseable version output should be harmless."
+  (should-not (pilish--extract-pi-version "npm warn only\n")))
+
+(ert-deftest pilish-test-pi-version-outdated-compares-segments-numerically ()
+  "Compare pi versions numerically against the 1.1.0 floor."
+  (should (equal pilish--minimum-pi-version "1.1.0"))
+  (should (pilish--pi-version-outdated-p "0.85.0"))
+  (should (pilish--pi-version-outdated-p "0.87.1"))
+  (should (pilish--pi-version-outdated-p "0.99.99"))
+  (should (pilish--pi-version-outdated-p "1.0.0"))
+  (should (pilish--pi-version-outdated-p "1.0.99"))
+  (should-not (pilish--pi-version-outdated-p "1.1.0"))
+  (should-not (pilish--pi-version-outdated-p "1.1.1"))
+  (should-not (pilish--pi-version-outdated-p "1.10.0")))
+
+(ert-deftest pilish-test-finish-pi-version-process-parses-stderr ()
+  "Version probing should accept pi versions printed to stderr."
+  (let ((proc (start-process "pilish-test-version" nil "cat"))
+        (stdout-buf (generate-new-buffer " *pi-test-version-stdout*"))
+        (stderr-buf (generate-new-buffer " *pi-test-version-stderr*"))
+        (resolved-version nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer stderr-buf
+            (insert "npm warn deprecated package@1.0.0: old\n0.79.1\n"))
+          (process-put proc 'pilish-version-callback
+                       (lambda (version)
+                         (setq resolved-version version)))
+          (process-put proc 'pilish-version-stdout-buf stdout-buf)
+          (process-put proc 'pilish-version-stderr-buf stderr-buf)
+          (pilish--finish-pi-version-process proc)
+          (should (equal resolved-version "0.79.1"))
+          (should-not (buffer-live-p stdout-buf))
+          (should-not (buffer-live-p stderr-buf)))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (when (buffer-live-p stdout-buf)
+        (kill-buffer stdout-buf))
+      (when (buffer-live-p stderr-buf)
+        (kill-buffer stderr-buf)))))
+
+(ert-deftest pilish-test-request-pi-version-async-waits-before-probe ()
+  "Version lookup waits briefly before starting the probe process."
+  (let ((scheduled-delay nil)
+        (scheduled-directory nil)
+        (resolved-version nil))
+    (cl-letf (((symbol-function 'pilish--run-pi-version-once-async)
+               (lambda (callback &optional directory)
+                 (setq scheduled-directory directory)
+                 (funcall callback "0.79.1")))
+              ((symbol-function 'run-at-time)
+               (lambda (secs _repeat fn &rest args)
+                 (setq scheduled-delay secs)
+                 (apply fn args)
+                 'mock-timer)))
+      (let ((default-directory "/ssh:pi-host:/home/pi/project/"))
+        (pilish--request-pi-version-async
+         (lambda (version)
+           (setq resolved-version version)))))
+    (should (= scheduled-delay pilish--version-probe-delay))
+    (should (equal scheduled-directory "/ssh:pi-host:/home/pi/project/"))
+    (should (equal resolved-version "0.79.1"))))
+
+(ert-deftest pilish-test-run-pi-version-uses-default-directory-file-handler ()
+  "Version probes let `default-directory' file handlers create the process."
+  (let ((pilish-executable '("pi"))
+        (captured nil)
+        (captured-default-directory nil)
+        (dummy-proc (start-process "pilish-test-version-capture" nil "cat")))
+    (unwind-protect
+        (progn
+          (cl-letf (((symbol-function 'make-process)
+                     (lambda (&rest args)
+                       (setq captured args
+                             captured-default-directory default-directory)
+                       dummy-proc)))
+            (pilish--run-pi-version-once-async
+             #'ignore "/ssh:pi-host:/home/pi/project/"))
+          (should (eq (plist-get captured :file-handler) t))
+          (should (equal captured-default-directory
+                         "/ssh:pi-host:/home/pi/project/"))
+          (should (bufferp (plist-get captured :buffer)))
+          (should (bufferp (plist-get captured :stderr))))
+      (when-let* ((stdout-buf (plist-get captured :buffer)))
+        (when (buffer-live-p stdout-buf)
+          (kill-buffer stdout-buf)))
+      (when-let* ((stderr-buf (plist-get captured :stderr)))
+        (when (buffer-live-p stderr-buf)
+          (kill-buffer stderr-buf)))
+      (when (process-live-p dummy-proc)
+        (delete-process dummy-proc)))))
+
+(ert-deftest pilish-test-probe-process-version-uses-chat-session-directory ()
+  "Version probing uses the stable chat session directory."
+  (let ((captured-default-directory nil))
+    (with-temp-buffer
+      (pilish-chat-mode)
+      (setq default-directory "/tmp/transcript/"
+            pilish--canonical-session-directory
+            "/ssh:pi-host:/home/pi/project/")
+      (cl-letf (((symbol-function 'pilish--request-pi-version-async)
+                 (lambda (_callback)
+                   (setq captured-default-directory default-directory))))
+        (pilish--probe-process-version-async (current-buffer)))
+      (should (equal captured-default-directory
+                     "/ssh:pi-host:/home/pi/project/")))))
+
+(ert-deftest pilish-test-process-replacement-invalidates-model-change ()
+  "A model callback cannot mutate state after its target process is replaced."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (setq pilish--process 'old-process)
+    (let ((token (pilish--begin-model-change
+                  'old-process (current-buffer))))
+      (should (pilish--model-change-current-p token))
+      (pilish--set-process 'new-process)
+      (should-not (pilish--model-change-current-p token))
+      (should-not (pilish--model-change-pending-p)))))
+
+(ert-deftest pilish-test-set-process-probes-version-for-current-process ()
+  "Setting process starts version probe and stores result for current process."
+  (let ((callback nil)
+        (messages nil)
+        (noninteractive nil)
+        (proc (start-process "pilish-test-proc" nil "cat")))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (cl-letf (((symbol-function 'pilish--request-pi-version-async)
+                     (lambda (cb)
+                       (setq callback cb)
+                       nil))
+                    ((symbol-function 'message)
+                     (lambda (fmt &rest args)
+                       (push (apply #'format fmt args) messages))))
+            (pilish--set-process proc)
+            (should callback)
+            (funcall callback "0.79.1")
+            (should (equal pilish--process-version "0.79.1"))
+            (should (equal (car messages) "Pi: version 0.79.1"))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest pilish-test-set-process-version-callback-uses-chat-buffer-context ()
+  "Version callback updates chat buffer even when current buffer changed."
+  (let ((callback nil)
+        (messages nil)
+        (noninteractive nil)
+        (proc (start-process "pilish-test-proc-a" nil "cat")))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (let ((chat-buf (current-buffer)))
+            (cl-letf (((symbol-function 'pilish--request-pi-version-async)
+                       (lambda (cb)
+                         (setq callback cb)
+                         nil))
+                      ((symbol-function 'message)
+                       (lambda (fmt &rest args)
+                         (push (apply #'format fmt args) messages))))
+              (pilish--set-process proc)
+              (with-temp-buffer
+                (funcall callback "0.79.1"))
+              (with-current-buffer chat-buf
+                (should (equal pilish--process-version "0.79.1")))
+              (should (equal (car messages) "Pi: version 0.79.1")))))
+      (when (process-live-p proc)
+        (delete-process proc)))))
+
+(ert-deftest pilish-test-probe-process-version-warns-when-pi-too-old ()
+  "Version probe warns clearly for every tested below-minimum pi version."
+  (dolist (version '("0.85.0" "0.87.1" "0.99.99" "1.0.0" "1.0.99"))
+    (ert-info ((format "Unsupported Pi %s" version))
+      (let ((callback nil)
+            (warnings nil)
+            (noninteractive nil)
+            (proc (start-process "pilish-test-proc-old" nil "cat")))
+        (unwind-protect
+            (with-temp-buffer
+              (pilish-chat-mode)
+              (cl-letf (((symbol-function 'pilish--request-pi-version-async)
+                         (lambda (cb)
+                           (setq callback cb)
+                           nil))
+                        ((symbol-function 'message) #'ignore)
+                        ((symbol-function 'display-warning)
+                         (lambda (&rest args)
+                           (push args warnings))))
+                (pilish--set-process proc)
+                (should callback)
+                (funcall callback version)
+                (should (equal pilish--process-version version))
+                (should (equal (length warnings) 1))
+                (should (equal (car (car warnings)) 'pi))
+                (let ((warning-text (nth 1 (car warnings))))
+                  (should (string-match-p
+                           "requires Pi 1.1.0 or later" warning-text))
+                  (should (string-match-p
+                           (format "found Pi %s" version) warning-text))
+                  (should (string-match-p
+                           "npm install -g @earendil-works/pi-coding-agent"
+                           warning-text)))))
+          (when (process-live-p proc)
+            (delete-process proc)))))))
+
+(ert-deftest pilish-test-probe-process-version-does-not-warn-when-supported ()
+  "Version probe accepts Pi 1.1.0 exactly and newer versions without warning."
+  (dolist (version '("1.1.0" "1.1.1" "1.10.0"))
+    (ert-info ((format "Supported Pi %s" version))
+      (let ((callback nil)
+            (warning-called nil)
+            (noninteractive nil)
+            (proc (start-process "pilish-test-proc-supported" nil "cat")))
+        (unwind-protect
+            (with-temp-buffer
+              (pilish-chat-mode)
+              (cl-letf (((symbol-function 'pilish--request-pi-version-async)
+                         (lambda (cb)
+                           (setq callback cb)
+                           nil))
+                        ((symbol-function 'message) #'ignore)
+                        ((symbol-function 'display-warning)
+                         (lambda (&rest _)
+                           (setq warning-called t))))
+                (pilish--set-process proc)
+                (should callback)
+                (funcall callback version)
+                (should (equal pilish--process-version version))
+                (should-not warning-called)))
+          (when (process-live-p proc)
+            (delete-process proc)))))))
+
+;;; Copy Visible Text
+
+(defmacro pilish-test--with-chat-markup (markdown &rest body)
+  "Insert MARKDOWN into a chat-mode buffer, fontify, then run BODY.
+Buffer is read-only with `inhibit-read-only' used for insertion.
+`font-lock-ensure' runs before BODY to apply invisible/display properties."
+  (declare (indent 1) (debug (stringp body)))
+  `(with-temp-buffer
+     (pilish-chat-mode)
+     (let ((inhibit-read-only t))
+       (insert ,markdown))
+     (font-lock-ensure)
+     ,@body))
+
+(ert-deftest pilish-test-visible-text-strips-bold-markers ()
+  "visible-text strips invisible bold markers (**)."
+  (pilish-test--with-chat-markup "Hello **bold** world"
+    (should (equal (pilish--visible-text (point-min) (point-max))
+                   "Hello bold world"))))
+
+(ert-deftest pilish-test-visible-text-strips-inline-code-backticks ()
+  "visible-text strips invisible backticks around inline code."
+  (pilish-test--with-chat-markup "Use `foo` here"
+    (should (equal (pilish--visible-text (point-min) (point-max))
+                   "Use foo here"))))
+
+(ert-deftest pilish-test-visible-text-strips-code-fences ()
+  "visible-text strips invisible code fences and language label."
+  (pilish-test--with-chat-markup "```python\ndef foo():\n    pass\n```\n"
+    (let ((result (pilish--visible-text (point-min) (point-max))))
+      (should (string-match-p "def foo" result))
+      (should-not (string-match-p "```" result))
+      (should-not (string-match-p "python" result)))))
+
+(ert-deftest pilish-test-visible-text-strips-setext-underline ()
+  "visible-text strips setext underlines (hidden by md-ts-hide-markup)."
+  (pilish-test--with-chat-markup "Assistant\n=========\n\nHello\n"
+    (let ((result (pilish--visible-text (point-min) (point-max))))
+      (should (string-match-p "Assistant" result))
+      (should-not (string-match-p "=====" result))
+      (should (string-match-p "Hello" result)))))
+
+(ert-deftest pilish-test-visible-text-strips-atx-heading-prefix ()
+  "visible-text strips invisible ATX heading prefix characters."
+  (pilish-test--with-chat-markup "## Code Example\n\nSome text\n"
+    (let ((result (pilish--visible-text (point-min) (point-max))))
+      (should (string-match-p "Code Example" result))
+      (should (string-match-p "Some text" result))
+      (should-not (string-match-p "^##" result)))))
+
+(ert-deftest pilish-test-visible-text-preserves-plain-text ()
+  "visible-text preserves text that has no hidden markup."
+  (pilish-test--with-chat-markup "Just plain text with no markup"
+    (should (equal (pilish--visible-text (point-min) (point-max))
+                   "Just plain text with no markup"))))
+
+(ert-deftest pilish-test-visible-text-position-map-preserves-source-envelope ()
+  "Visible character indices map exactly across omitted property spans."
+  (with-temp-buffer
+    (insert "aXXbcYYd")
+    (put-text-property 2 4 'invisible 'md-ts--markup)
+    (put-text-property 6 8 'invisible 'md-ts--markup)
+    (let ((at-boundary
+           (pilish--visible-text-with-position-map 1 9 6))
+          (inside-hidden
+           (pilish--visible-text-with-position-map 1 9 7)))
+      (should (equal "abcd" (plist-get at-boundary :text)))
+      (should (equal [1 4 5 8] (plist-get at-boundary :positions)))
+      (should (= 3 (plist-get at-boundary :index)))
+      (should (= 3 (plist-get inside-hidden :index)))
+      ;; Visible [1,3) is "bc" and maps to the real half-open envelope 4..6.
+      (let ((positions (plist-get at-boundary :positions)))
+        (should (equal (cons (aref positions 1)
+                             (1+ (aref positions 2)))
+                       '(4 . 6)))))))
+
+(ert-deftest pilish-test-copy-raw-markdown-defcustom-default ()
+  "pilish-copy-raw-markdown defcustom defaults to nil."
+  (should (eq pilish-copy-raw-markdown nil)))
+
+(ert-deftest pilish-test-project-trust-policy-default ()
+  "Project trust policy defaults to approving project-local Pi inputs."
+  (should (eq pilish-project-trust-policy 'approve)))
+
+(ert-deftest pilish-test-hot-tail-turn-count-defcustom-defaults ()
+  "Hot-tail turn count defaults to 3 headed turns."
+  (should (= 3 pilish-hot-tail-turn-count)))
+
+(ert-deftest pilish-test-extension-status-properties-apply-in-header-line ()
+  "Extension status properties are applied by status key in the header line."
+  (let ((pilish-extension-status-faces
+         '(("sub-status:usage" . (:foreground "#c6a0f6")))))
+    (with-temp-buffer
+      (pilish-chat-mode)
+      (setq pilish--state '(:model "claude-sonnet-4")
+            pilish--extension-status
+            '(("solveit-mode" . "⚡ concise")
+              ("sub-status:usage" . "4h51m 1% · 9h9m 41%")))
+      (let ((header (pilish--header-line-string)))
+        (should (string-match-p "⚡ concise · 4h51m 1%% · 9h9m 41%%"
+                                (substring-no-properties header)))
+        (should-not (get-text-property (string-match-p "⚡" header) 'face header))
+        (should (equal (get-text-property (string-match-p "⚡" header)
+                                          'help-echo header)
+                       "solveit-mode"))
+        (should (eq (get-text-property (string-match-p "⚡" header)
+                                       'mouse-face header)
+                    'highlight))
+        (should (equal (get-text-property (string-match-p "4h" header) 'face header)
+                       '(:foreground "#c6a0f6")))
+        (should (equal (get-text-property (string-match-p "4h" header)
+                                          'help-echo header)
+                       "sub-status:usage"))
+        (should (eq (get-text-property (string-match-p "4h" header)
+                                       'mouse-face header)
+                    'highlight))))))
+
+;;; Pending prompt acceptance presentation
+
+(ert-deftest pilish-test-header-pending-acceptance-copy ()
+  "Each unacknowledged prompt shows honest wait copy without reading config."
+  (pilish-test-with-rpc-session (chat input proc commands)
+    (let (phases)
+      (let ((pilish-activity-phase-functions
+             (list (lambda (_chat _input _old new _reason) (push new phases)))))
+        (dolist (text '("first ordinary prompt" "second ordinary prompt"))
+          (with-current-buffer input (insert text) (pilish-send))
+          (let ((request (car commands))
+                (phases-before (copy-sequence phases))
+                (commands-before (copy-tree commands)))
+            (cl-letf (((symbol-function 'file-exists-p)
+                       (lambda (&rest _) (ert-fail "Header checked disk config")))
+                      ((symbol-function 'insert-file-contents)
+                       (lambda (&rest _) (ert-fail "Header read disk config")))
+                      ((symbol-function 'directory-files)
+                       (lambda (&rest _) (ert-fail "Header scanned disk config"))))
+              (should (string-match-p "waiting for Pi"
+                                      (pilish-test--input-header input)))
+              (dolist (buffer (list input chat))
+                (let* ((header (with-current-buffer buffer (pilish--header-line-string)))
+                       (start (string-match (regexp-quote "waiting for Pi") header)))
+                  (should start)
+                  (should (equal (get-text-property start 'help-echo header)
+                                 "MCP servers may be connecting during startup."))
+                  (should (eq (get-text-property start 'face header)
+                              'pilish-activity-phase)))))
+            (with-current-buffer chat
+              (should (eq pilish--status 'sending))
+              (should (equal pilish--activity-phase "thinking"))
+              (should-not (pilish--prompt-wait-accepted pilish--prompt-wait)))
+            (should (equal phases phases-before))
+            (should (equal commands commands-before))
+            ;; A handled acknowledgment permits the next ordinary submission.
+            (pilish-test--stdout
+             proc (list :type "response" :command "prompt" :success t
+                        :id (plist-get request :id) :data '(:disposition "handled"))))))
+      (should (equal (mapcar (lambda (command) (plist-get command :message))
+                            (reverse commands))
+                     '("first ordinary prompt" "second ordinary prompt"))))))
+
+(ert-deftest pilish-test-header-pending-acceptance-acknowledgments ()
+  "Acceptance redisplays normal thinking, handled idle, or queued feedback."
+  (dolist (case '(((:disposition "started") sending "thinking" nil)
+                  (nil sending "thinking" nil)
+                  ((:disposition "handled") idle "idle" nil)
+                  ((:disposition "queued") sending "queued"
+                   "Pi: Prompt acknowledged as queued")))
+    (ert-info ((format "prompt acknowledgment data=%S" (car case)))
+      (pilish-test-with-rpc-session (chat input proc commands)
+        (let ((schedule (symbol-function 'run-at-time)) refreshed notices)
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (seconds repeat function &rest args)
+                       (if (eq function 'pilish--clear-sending-if-no-agent-start)
+                           'fake-prompt-start-timer
+                         (apply schedule seconds repeat function args))))
+                    ((symbol-function 'message)
+                     (lambda (fmt &rest args) (push (apply #'format fmt args) notices))))
+            (with-current-buffer input (insert "ordinary prompt") (pilish-send))
+            (let ((request (car commands)))
+              (cl-letf (((symbol-function 'force-mode-line-update)
+                         (lambda (&optional all)
+                           (when (or all (eq (current-buffer) input))
+                             (push (pilish-test--input-header input) refreshed)))))
+                (pilish-test--stdout
+                 proc (append (list :type "response" :command "prompt" :success t
+                                    :id (plist-get request :id))
+                              (when (car case) (list :data (car case))))))
+              (should refreshed)
+              (dolist (header refreshed)
+                (should-not (string-match-p "waiting for Pi" header)))
+              (let ((header (pilish-test--input-header input)))
+                (should (string-match-p (nth 2 case) header))
+                (should-not (string-match-p "waiting for Pi" header)))
+              (with-current-buffer chat
+                (should (eq pilish--status (nth 1 case)))
+                (should (equal pilish--activity-phase (nth 2 case))))
+              (should (equal notices (when (nth 3 case) (list (nth 3 case)))))
+              (should (equal (mapcar (lambda (command) (plist-get command :type)) commands)
+                             '("prompt"))))))))))
+
+(ert-deftest pilish-test-header-pending-acceptance-observed-work ()
+  "Start, echo, compaction, and ended independent runs outrank wait feedback."
+  (dolist (case '((start ((:type "agent_start")) streaming "thinking")
+                  (ended ((:type "agent_start") (:type "agent_end" :messages []))
+                         sending "thinking")
+                  (echo-only ((:type "message_start" :message
+                                     (:role "user" :timestamp 1704067200000
+                                      :content [(:type "text" :text "ordinary prompt")])))
+                             sending "thinking")
+                  (compaction ((:type "compaction_start" :reason "manual"))
+                              compacting "compact")
+                  (settled ((:type "agent_start") (:type "agent_end" :messages [])
+                            (:type "agent_settled")) idle "idle")
+                  (newer-ended ((:type "agent_start") (:type "agent_end" :messages [])
+                                (:type "agent_settled") (:type "agent_start")
+                                (:type "agent_end" :messages [])) sending "thinking")))
+    (ert-info ((format "observed before acknowledgment=%s" (car case)))
+      (pilish-test-with-rpc-session (chat input proc commands)
+        (let ((schedule (symbol-function 'run-at-time)) notices)
+          (cl-letf (((symbol-function 'run-at-time)
+                     (lambda (seconds repeat function &rest args)
+                       (if (eq function 'pilish--clear-sending-if-no-agent-start)
+                           'fake-prompt-start-timer
+                         (apply schedule seconds repeat function args))))
+                    ((symbol-function 'message)
+                     (lambda (fmt &rest args) (push (apply #'format fmt args) notices))))
+            (with-current-buffer input (insert "ordinary prompt") (pilish-send))
+            (let ((request (car commands)))
+              (dolist (event (nth 1 case)) (pilish-test--stdout proc event))
+              ;; Both the observed event and a later acknowledgment retain phase.
+              (dotimes (after-acceptance 2)
+                (when (= after-acceptance 1)
+                  (pilish-test--stdout
+                   proc (list :type "response" :command "prompt" :success t
+                              :id (plist-get request :id) :data '(:disposition "started"))))
+                (let ((header (pilish-test--input-header input)))
+                  (should (string-match-p (nth 3 case) header))
+                  (should-not (string-match-p "waiting for Pi" header)))
+                (with-current-buffer chat
+                  (should (eq pilish--status (nth 2 case)))
+                  (should (equal pilish--activity-phase (nth 3 case)))))
+              (should (equal notices (when (eq (car case) 'compaction)
+                                       '("Pi: Compacting..."))))
+              (should (equal (mapcar (lambda (command) (plist-get command :type)) commands)
+                             '("prompt"))))))))))
+
+(ert-deftest pilish-test-header-pending-acceptance-does-not-expire ()
+  "Twelve silent seconds never time out an unacknowledged prompt or draft."
+  (pilish-test-with-clock now
+    (pilish-test-with-rpc-session (chat input proc commands)
+      (let ((schedule (symbol-function 'run-at-time))
+            (pilish-session-inactivity-timeout 10) fallbacks)
+        (pilish-test--adopt-rpc-process chat proc)
+        (cl-letf (((symbol-function 'run-at-time)
+                   (lambda (seconds repeat function &rest args)
+                     (when (eq function 'pilish--clear-sending-if-no-agent-start)
+                       (push (cons function args) fallbacks))
+                     (apply schedule seconds repeat function args))))
+          (with-current-buffer input (insert "slow prompt") (pilish-send))
+          (let ((wait (buffer-local-value 'pilish--prompt-wait chat)))
+            (with-current-buffer input (insert "unsent newer draft"))
+            (setq now 1012.0)
+            (let ((header (pilish-test--input-header input)))
+              (should (string-match-p "waiting for Pi" header))
+              (should-not (string-match-p "no output" header)))
+            (with-current-buffer chat
+              (should (eq pilish--prompt-wait wait))
+              (should (eq pilish--status 'sending))
+              (should (equal pilish--activity-phase "thinking"))
+              (should-not (pilish--prompt-wait-accepted wait))
+              (should-not pilish--prompt-start-timer))
+            (should-not fallbacks)
+            (should (= 1 (hash-table-count (pilish--get-pending-requests proc))))
+            (should (equal (mapcar (lambda (command) (plist-get command :type)) commands)
+                           '("prompt")))
+            (with-current-buffer input
+              (should (equal (buffer-string) "unsent newer draft")))))))))
+
+(ert-deftest pilish-test-header-pending-acceptance-inactivity-precedence ()
+  "A silent observed run keeps its existing warning despite an unacked prompt."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (with-current-buffer input (insert "ordinary prompt") (pilish-send))
+    (pilish-test--stdout proc '(:type "agent_start"))
+    (setq now 1300.0)
+    (let* ((header (with-current-buffer input (pilish--header-line-string)))
+           (start (string-match (regexp-quote "thinking (no output 5m)") header)))
+      (should start)
+      (should (eq (get-text-property start 'face header) 'warning))
+      (should (string-match-p "Pi may still be working"
+                              (get-text-property start 'help-echo header)))
+      (should-not (string-match-p "waiting for Pi" header)))
+    (with-current-buffer chat
+      (should (eq pilish--status 'streaming))
+      (should (equal pilish--activity-phase "thinking"))
+      (should-not (pilish--prompt-wait-accepted pilish--prompt-wait)))
+    (should (equal (mapcar (lambda (command) (plist-get command :type)) commands)
+                   '("prompt")))))
+
+(ert-deftest pilish-test-kill-ring-save-strips-by-default ()
+  "kill-ring-save strips hidden markup by default."
+  (pilish-test--with-chat-markup "Hello **bold** world"
+    (kill-ring-save (point-min) (point-max))
+    (should (equal (car kill-ring) "Hello bold world"))))
+
+(ert-deftest pilish-test-kill-ring-save-keeps-raw-when-enabled ()
+  "When copy-raw-markdown is t, kill-ring-save keeps raw markdown."
+  (pilish-test--with-chat-markup "Hello **bold** world"
+    (let ((pilish-copy-raw-markdown t))
+      (kill-ring-save (point-min) (point-max))
+      (should (equal (car kill-ring) "Hello **bold** world")))))
+
+;;; Chat Navigation Behavior
+
+(ert-deftest pilish-test-next-message-from-top ()
+  "n from point-min reaches first You heading."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (should (looking-at "You · 10:00"))))
+
+(ert-deftest pilish-test-next-message-successive ()
+  "Successive n reaches each You heading in order."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (should (looking-at "You · 10:00"))
+    (pilish-next-message)
+    (should (looking-at "You · 10:05"))
+    (pilish-next-message)
+    (should (looking-at "You · 10:10"))))
+
+(ert-deftest pilish-test-next-message-recognizes-full-date-heading ()
+  "Message navigation recognizes full-date You headings."
+  (with-temp-buffer
+    (insert "Intro\n\nYou · 2026-06-13 10:05\n========================\nQuestion\n")
+    (goto-char (point-min))
+    (pilish-next-message)
+    (should (looking-at "You · 2026-06-13 10:05"))))
+
+(ert-deftest pilish-test-next-message-at-last ()
+  "n at last You heading keeps point and shows message."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (pilish-next-message)
+    (pilish-next-message)
+    (should (looking-at "You · 10:10"))
+    (let ((pos (point))
+          (shown-message nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (setq shown-message (apply #'format fmt args)))))
+        (pilish-next-message))
+      ;; Point stays on the last heading
+      (should (= (point) pos))
+      (should (equal shown-message "No more messages")))))
+
+(ert-deftest pilish-test-previous-message-from-last ()
+  "p from last You heading reaches previous."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    ;; Navigate to last heading first
+    (pilish-next-message)
+    (pilish-next-message)
+    (pilish-next-message)
+    (should (looking-at "You · 10:10"))
+    (pilish-previous-message)
+    (should (looking-at "You · 10:05"))))
+
+(ert-deftest pilish-test-previous-message-at-first ()
+  "p at first You heading keeps point and shows message."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (should (looking-at "You · 10:00"))
+    (let ((pos (point))
+          (shown-message nil))
+      (cl-letf (((symbol-function 'message)
+                 (lambda (fmt &rest args)
+                   (setq shown-message (apply #'format fmt args)))))
+        (pilish-previous-message))
+      ;; Point stays on the first heading
+      (should (= (point) pos))
+      (should (equal shown-message "No previous message")))))
+
+(ert-deftest pilish-test-other-window-scroll-buffer-set-locally ()
+  "Session setup stores `other-window-scroll-buffer' as input-local state."
+  (let ((root "/tmp/pilish-test-scroll-other/")
+        (original-default (default-value 'other-window-scroll-buffer)))
+    (make-directory root t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--display-buffers) #'ignore))
+      (unwind-protect
+          (progn
+            (let ((default-directory root))
+              (pilish))
+            (let ((chat (get-buffer (pilish-test--chat-buffer-name root)))
+                  (input (get-buffer (pilish-test--input-buffer-name root))))
+              (with-current-buffer input
+                (should (local-variable-p 'other-window-scroll-buffer))
+                (should (eq other-window-scroll-buffer chat)))
+              (should (eq (default-value 'other-window-scroll-buffer)
+                          original-default))))
+        (set-default 'other-window-scroll-buffer original-default)
+        (pilish-test--kill-session-buffers root)))))
+
+(ert-deftest pilish-test-other-window-for-scrolling-tracks-each-input-session ()
+  "Each input buffer scrolls its own chat buffer."
+  (let ((root-a "/tmp/pilish-test-scroll-a/")
+        (root-b "/tmp/pilish-test-scroll-b/")
+        (original-default (default-value 'other-window-scroll-buffer)))
+    (make-directory root-a t)
+    (make-directory root-b t)
+    (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--display-buffers) #'ignore))
+      (unwind-protect
+          (progn
+            (let ((default-directory root-a))
+              (pilish))
+            (let ((default-directory root-b))
+              (pilish))
+            (let* ((chat-a (get-buffer (pilish-test--chat-buffer-name root-a)))
+                   (input-a (get-buffer (pilish-test--input-buffer-name root-a)))
+                   (chat-b (get-buffer (pilish-test--chat-buffer-name root-b)))
+                   (input-b (get-buffer (pilish-test--input-buffer-name root-b))))
+              (delete-other-windows)
+              (switch-to-buffer chat-a)
+              (let* ((chat-win-a (selected-window))
+                     (input-win-a (split-window chat-win-a -10 'below))
+                     (chat-win-b (split-window chat-win-a nil 'right))
+                     input-win-b)
+                (set-window-buffer input-win-a input-a)
+                (set-window-buffer chat-win-b chat-b)
+                (setq input-win-b (split-window chat-win-b -10 'below))
+                (set-window-buffer input-win-b input-b)
+                (select-window input-win-a)
+                (should (eq (window-buffer (other-window-for-scrolling)) chat-a))
+                (select-window input-win-b)
+                (should (eq (window-buffer (other-window-for-scrolling)) chat-b)))))
+        (set-default 'other-window-scroll-buffer original-default)
+        (pilish-test--kill-session-buffers root-a)
+        (pilish-test--kill-session-buffers root-b)))))
+
+;;; Scroll Preservation
+
+(ert-deftest pilish-test-count-screen-lines-up-to-matches-native ()
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (let ((window (selected-window)))
+        (dolist (text (list "" "\n" "\n\n" "a" "a\n" "a\nb" "a\nb\n"
+                           "short\n\nlast\n"
+                           (propertize "x" 'display "a\nb\nc\nd\n")))
+          (erase-buffer)
+          (insert text)
+          (dolist (narrowed '(nil t))
+            (save-restriction
+              (when (and narrowed (> (buffer-size) 3))
+                (narrow-to-region 2 (1- (point-max))))
+              (let ((beg (point-min))
+                    (end (point-max)))
+                (cl-loop for start from beg to end do
+                         (cl-loop for finish from beg to end do
+                                  (dolist (final-newline '(nil t))
+                                    (let ((exact (count-screen-lines
+                                                  start finish final-newline window)))
+                                      (dolist (limit (delete-dups
+                                                      (list 0 1 (max 0 (1- exact))
+                                                            exact (1+ exact) (+ exact 2))))
+                                        (ert-info ((format "%S narrowed=%S region=%S final=%S limit=%S"
+                                                           text narrowed (list start finish)
+                                                           final-newline limit))
+                                          (should
+                                           (= (min limit exact)
+                                              (pilish--count-screen-lines-up-to
+                                               start finish limit window final-newline)))))))))
+                (should (= beg (point-min)))
+                (should (= end (point-max)))))))))))
+
+(ert-deftest pilish-test-count-screen-lines-up-to-display-properties ()
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (insert "a\nhidden\nshown\nz")
+      (put-text-property 3 10 'invisible t)
+      (put-text-property 10 15 'display "two\nrows\n")
+      (dolist (final-newline '(nil t))
+        (let ((exact (count-screen-lines (point-min) (point-max)
+                                         final-newline (selected-window))))
+          (dotimes (limit (+ exact 2))
+            (should (= (min limit exact)
+                       (pilish--count-screen-lines-up-to
+                        (point-min) (point-max) limit (selected-window)
+                        final-newline)))))))))
+
+(ert-deftest pilish-test-count-screen-lines-up-to-motion-budget-and-state ()
+  (save-window-excursion
+    (delete-other-windows)
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (dotimes (_ 200) (insert "a short line\n"))
+      (let* ((window (selected-window))
+             (other (split-window-right))
+             (motion (symbol-function 'vertical-motion))
+             requests)
+        (set-window-start window 14 t)
+        (set-window-point window 27)
+        (set-window-hscroll window 3)
+        (select-window other)
+        (goto-char 40)
+        (narrow-to-region 14 (1- (point-max)))
+        (let ((before (list (point) (point-min) (point-max)
+                            (selected-window) (window-start window)
+                            (window-point window) (window-hscroll window))))
+          (cl-letf (((symbol-function 'count-screen-lines)
+                     (lambda (&rest _) (ert-fail "Unrestricted display count")))
+                    ((symbol-function 'vertical-motion)
+                     (lambda (rows &rest args)
+                       (push rows requests)
+                       (apply motion rows args))))
+            (should (= 7 (pilish--count-screen-lines-up-to
+                          (point-min) (point-max) 7 window)))
+            (should (equal requests '(7)))
+            (setq requests nil)
+            (should (= 0 (pilish--count-screen-lines-up-to
+                          (point-min) (point-max) 0 window)))
+            (should-not requests)
+            (should (= 0 (pilish--count-screen-lines-up-to 20 20 7 window)))
+            (should-not requests))
+          (should (equal before
+                         (list (point) (point-min) (point-max)
+                               (selected-window) (window-start window)
+                               (window-point window) (window-hscroll window)))))))))
+
+(ert-deftest pilish-test-count-screen-lines-up-to-unwinds-on-motion-error ()
+  (with-temp-buffer
+    (insert "before\nmeasure\nafter\n")
+    (goto-char 10)
+    (narrow-to-region 4 18)
+    (cl-letf (((symbol-function 'vertical-motion)
+               (lambda (&rest _) (error "Expected display failure"))))
+      (should (equal (should-error (pilish--count-screen-lines-up-to
+                                   5 16 3 (selected-window)))
+                     '(error "Expected display failure"))))
+    (should (= (point) 10))
+    (should (= (point-min) 4))
+    (should (= (point-max) 18))))
+
+(ert-deftest pilish-test-viewport-counts-fill-and-tail-thresholds ()
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (let ((window (selected-window))
+            (motion (symbol-function 'vertical-motion))
+            requests starts recenters)
+        (dotimes (_ 8) (insert "line\n"))
+        (cl-letf (((symbol-function 'count-screen-lines)
+                   (lambda (&rest _) (ert-fail "Unrestricted viewport count")))
+                  ((symbol-function 'vertical-motion)
+                   (lambda (rows &rest args)
+                     (push rows requests)
+                     (apply motion rows args))))
+          (dolist (height '(1 2 5))
+            (dolist (lines (delete-dups (list (max 0 (- height 2))
+                                             (1- height) height)))
+              (setq requests nil)
+              (let ((end (1+ (* 5 lines))))
+                (should (eq (not (null (pilish--window-start-fills-window-within-one-row-p
+                                       1 end height window)))
+                            (>= lines (1- height))))
+                (should (equal requests (unless (or (= height 1) (= lines 0))
+                                          (list (1- height)))))))))
+        (let ((height 5))
+          (dolist (lines (list (1- height) height))
+            (erase-buffer)
+            (dotimes (_ lines) (insert "line\n"))
+            (setq requests nil starts nil recenters nil)
+            (cl-letf (((symbol-function 'window-body-height)
+                       (lambda (&rest _) height))
+                      ((symbol-function 'set-window-start)
+                       (lambda (_win start &rest _) (push start starts)))
+                      ((symbol-function 'recenter)
+                       (lambda (row &rest _) (push row recenters)))
+                      ((symbol-function 'count-screen-lines)
+                       (lambda (&rest _) (ert-fail "Unrestricted tail count")))
+                      ((symbol-function 'vertical-motion)
+                       (lambda (rows &rest args)
+                         (push rows requests)
+                         (apply motion rows args))))
+              (pilish--restore-tail-window window (point-min)))
+            (should (equal (nreverse requests)
+                           (list (1- height) (1+ height))))
+            (should (equal starts (when (= lines (1- height)) '(1))))
+            (should (equal recenters (when (= lines height) '(-1))))))))))
+
+(ert-deftest pilish-test-restore-tail-window-keeps-end-above-scroll-margin ()
+  "A follower keeps its start only while the end stays above the margin.
+Redisplay recenters a window whose point is inside the bottom scroll
+margin, so a kept end there would leave the window half empty."
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (let* ((window (selected-window))
+             (body (window-body-height window)))
+        (dotimes (_ (* 2 body)) (insert "line\n"))
+        (let ((scroll-margin 100)
+              (maximum-scroll-margin 0.25))
+          (should (= (pilish--window-bottom-margin window)
+                     (min (/ (1- body) 2) (truncate (* body 0.25))))))
+        (dolist (margin '(0 2))
+          (let ((scroll-margin margin)
+                (start (save-excursion
+                         (goto-char (point-max))
+                         (forward-line (- 1 body))
+                         (point)))
+                starts recenters)
+            (should (= (count-screen-lines start (point-max) t window) body))
+            (should (= (pilish--window-bottom-margin window) margin))
+            (cl-letf (((symbol-function 'set-window-start)
+                       (lambda (_win start &rest _) (push start starts)))
+                      ((symbol-function 'recenter)
+                       (lambda (row &rest _) (push row recenters))))
+              (pilish--restore-tail-window window start))
+            (should (equal starts (when (= margin 0) (list start))))
+            (should (equal recenters (when (= margin 2) '(-1))))))))))
+
+(ert-deftest pilish-test-scroll-preservation-keeps-reader-and-tail-points ()
+  "An insertion keeps a nonselected reader and a follower on their text."
+  (let ((chat (generate-new-buffer " *pilish-scroll-reader-and-tail*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer chat)
+          (pilish-chat-mode)
+          (let ((inhibit-read-only t))
+            (insert "AFTER-STREAM sentinel\n")
+            (let* ((reader (selected-window))
+                   (tail (split-window-right))
+                   (reader-point (point-min)))
+              (set-window-buffer tail chat)
+              (set-window-point tail (point-max))
+              (goto-char reader-point)
+              (set-window-start reader (point-min) t)
+              (select-window tail)
+              (should-not (pilish--window-following-p reader))
+              (should (pilish--window-following-p tail))
+              (should
+               (null
+                (pilish--with-scroll-preservation
+                  (save-excursion
+                    (goto-char reader-point)
+                    (insert "streamed output\n")
+                    'body-value))))
+              (with-selected-window reader
+                (should (looking-at-p "AFTER-STREAM sentinel"))
+                (should (= (window-point reader) (point))))
+              (should (= (window-point tail) (point-max))))))
+      (kill-buffer chat))))
+
+(ert-deftest pilish-test-scroll-back-command-stops-following ()
+  "Scrolling a follower back with its end in view makes it a reader.
+Positioning the tail during a command keeps it following."
+  (let ((chat (generate-new-buffer " *pilish-scroll-back*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer chat)
+          (pilish-chat-mode)
+          (let ((inhibit-read-only t)
+                (window (selected-window))
+                (line (lambda (n)
+                        (save-excursion
+                          (goto-char (point-min))
+                          (forward-line (1- n))
+                          (point)))))
+            (dotimes (i 100) (insert (format "line %d\n" (1+ i))))
+            (set-window-point window (point-max))
+            (set-window-start window (funcall line 98))
+            (should (pilish--window-following-p window))
+            ;; A scroll command moves the start back; point stays at the end.
+            (pilish--record-command-chat-views)
+            (set-window-start window (funcall line 97))
+            (cl-letf (((symbol-function 'pos-visible-in-window-p)
+                       (lambda (&rest _) t)))
+              (pilish--settle-command-chat-views))
+            (should-not pilish--command-chat-views)
+            (should-not (pilish--window-following-p window))
+            (should (= (window-point window) (funcall line 100)))
+            (should (= (window-start window) (funcall line 97)))
+            (pilish--append-to-chat "streamed output\n")
+            (should (= (window-start window) (funcall line 97)))
+            (should (= (window-point window) (funcall line 100)))
+            ;; A command that restores a follower's tail is no scroll back.
+            (set-window-point window (point-max))
+            (set-window-start window (funcall line 60))
+            (pilish--record-command-chat-views)
+            (cl-letf (((symbol-function 'recenter)
+                       (lambda (&rest _)
+                         (set-window-start window (funcall line 50)))))
+              (pilish--restore-tail-window window (funcall line 40)))
+            (cl-letf (((symbol-function 'pos-visible-in-window-p)
+                       (lambda (&rest _) t)))
+              (pilish--settle-command-chat-views))
+            (should (= (window-start window) (funcall line 50)))
+            (should (pilish--window-following-p window))))
+      (kill-buffer chat))))
+
+(ert-deftest pilish-test-scroll-command-keeps-point-in-view ()
+  "A scroll that leaves a reader's point below the view moves it into view.
+The next scroll then starts from the view instead of from point."
+  (let ((chat (generate-new-buffer " *pilish-scroll-point-in-view*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer chat)
+          (pilish-chat-mode)
+          (let ((inhibit-read-only t)
+                (window (selected-window))
+                (line (lambda (n)
+                        (save-excursion
+                          (goto-char (point-min))
+                          (forward-line (1- n))
+                          (point)))))
+            (dotimes (i 100) (insert (format "line %d\n" (1+ i))))
+            (set-window-start window (funcall line 60))
+            (set-window-point window (funcall line 60))
+            (pilish--record-command-chat-views)
+            ;; Emacs scrolling left point just past the view.
+            (set-window-start window (funcall line 59))
+            (set-window-point window (funcall line 90))
+            (cl-letf (((symbol-function 'window-end)
+                       (lambda (&rest _) (funcall line 70)))
+                      ((symbol-function 'pos-visible-in-window-p)
+                       (lambda (pos &rest _)
+                         (and (>= pos (funcall line 59))
+                              (< pos (funcall line 70))))))
+              (pilish--settle-command-chat-views))
+            (should (= (window-start window) (funcall line 59)))
+            (should (= (window-point window) (1- (funcall line 70))))
+            ;; A point above the view moves to its start.
+            (pilish--record-command-chat-views)
+            (set-window-start window (funcall line 65))
+            (set-window-point window (funcall line 10))
+            (pilish--settle-command-chat-views)
+            (should (= (window-point window) (funcall line 65)))))
+      (kill-buffer chat))))
+
+(ert-deftest pilish-test-scroll-preservation-keeps-point-after-contraction ()
+  "A deletion before point keeps a nonselected reader on the same text."
+  (let ((chat (generate-new-buffer " *pilish-scroll-contraction*"))
+        (input (generate-new-buffer " *pilish-scroll-input*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer chat)
+          (pilish-chat-mode)
+          (let ((inhibit-read-only t))
+            (insert "remove this prefix\nAFTER-STREAM sentinel\n")
+            (goto-char (point-min))
+            (search-forward "AFTER-STREAM sentinel")
+            (beginning-of-line)
+            (let* ((reader (selected-window))
+                   (input-window (split-window-below))
+                   (sentinel (point)))
+              (set-window-buffer input-window input)
+              (set-window-point reader sentinel)
+              (select-window input-window)
+              (with-current-buffer chat
+                (pilish--with-scroll-preservation
+                  (save-excursion
+                    (delete-region (point-min) sentinel))))
+              (with-selected-window reader
+                (should (looking-at-p "AFTER-STREAM sentinel"))
+                (should (= (window-point reader) (point)))))))
+      (kill-buffer chat)
+      (kill-buffer input))))
+
+(ert-deftest pilish-test-scroll-preservation-restores-tail-only-after-character-edits ()
+  "Property edits keep follower starts, and every exit releases anchors."
+  (let ((chat (generate-new-buffer " *pilish-scroll-gate-chat*"))
+        (input (generate-new-buffer " *pilish-scroll-gate-input*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (switch-to-buffer chat)
+          (insert (mapconcat (lambda (n) (format "line %02d" n))
+                             (number-sequence 1 50) "\n"))
+          (let* ((reader (selected-window))
+                 (tail (split-window-right))
+                 (input-window (split-window reader -5 'below))
+                 (original-copy (symbol-function 'copy-marker))
+                 (original-restore (symbol-function 'pilish--restore-tail-window))
+                 calls anchors)
+            (set-window-point reader 20)
+            (set-window-buffer tail chat)
+            (set-window-point tail (point-max))
+            (set-window-buffer input-window input)
+            (select-window input-window)
+            (insert "unchanged draft")
+            (goto-char 5)
+            (with-current-buffer chat
+              (goto-char 20)
+              (cl-letf (((symbol-function 'copy-marker)
+                         (lambda (&rest args)
+                           (let ((marker (apply original-copy args)))
+                             (push marker anchors)
+                             marker)))
+                        ((symbol-function 'pilish--restore-tail-window)
+                         (lambda (window start)
+                           (push window calls)
+                           (funcall original-restore window start))))
+                (dolist (operation '(none face overlay text))
+                  (setq calls nil anchors nil)
+                  (should
+                   (null
+                    (pilish--with-scroll-preservation
+                      (save-excursion
+                        (pcase operation
+                          ('face (put-text-property 1 2 'face 'bold))
+                          ('overlay (delete-overlay (make-overlay 1 2)))
+                          ('text (subst-char-in-region 1 2 ?l ?L)))))))
+                  (should (= (length calls) (if (eq operation 'text) 1 0)))
+                  (should (= (length anchors) 2))
+                  (should (cl-every (lambda (marker) (null (marker-buffer marker)))
+                                    anchors))
+                  (should (= (point) 20))
+                  (should (= (window-point reader) 20))
+                  (should (eq (selected-window) input-window))
+                  (should (= (window-point input-window) 5))
+                  (should (equal (with-current-buffer input (buffer-string))
+                                 "unchanged draft")))
+                (setq calls nil anchors nil)
+                (condition-case nil
+                    (pilish--with-scroll-preservation (error "Expected error"))
+                  (error nil))
+                (should-not calls)
+                (should (= (length anchors) 2))
+                (should (cl-every (lambda (marker) (null (marker-buffer marker)))
+                                  anchors))))))
+      (kill-buffer chat)
+      (kill-buffer input))))
+
+(ert-deftest pilish-test-transcript-construction-settles-once-after-appends ()
+  "Chunk count does not multiply viewport work or disturb independent views."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((chat (generate-new-buffer " *pilish-construction-chat*"))
+          (input (generate-new-buffer " *pilish-construction-input*")))
+      (unwind-protect
+          (progn
+            (switch-to-buffer chat)
+            (let* ((reader (selected-window))
+                   (tail (split-window-right))
+                   (input-window (split-window reader -5 'below))
+                   (capture (symbol-function 'get-buffer-window-list))
+                   (restore (symbol-function 'pilish--restore-tail-window)))
+              (set-window-buffer tail chat)
+              (set-window-buffer input-window input)
+              (select-window input-window)
+              (insert "unchanged draft")
+              (goto-char 5)
+              (dolist (chunks '(1 80 320))
+                (with-current-buffer chat
+                  (erase-buffer)
+                  (insert "retained prefix\n")
+                  (set-window-point reader 3)
+                  (set-window-point tail (point-max))
+                  (let ((captures 0) (restores 0))
+                    (cl-letf (((symbol-function 'get-buffer-window-list)
+                               (lambda (&rest args)
+                                 (cl-incf captures)
+                                 (apply capture args)))
+                              ((symbol-function 'pilish--restore-tail-window)
+                               (lambda (window start)
+                                 (cl-incf restores)
+                                 (funcall restore window start))))
+                      (should
+                       (eq 'complete
+                           (pilish--with-transcript-construction
+                             (dotimes (_ chunks)
+                               (pilish--append-to-chat "appended line\n"))
+                             (goto-char (point-max))
+                             'complete))))
+                    (should (= captures 1))
+                    (should (= restores 1)))
+                  (should (equal (buffer-string)
+                                 (concat "retained prefix\n"
+                                         (apply #'concat
+                                                (make-list chunks "appended line\n")))))
+                  (should (= (point) (point-max)))
+                  (should (= (window-point reader) 3))
+                  (should (= (window-point tail) (point-max)))
+                  (should (eq (selected-window) input-window))
+                  (should (= (window-point input-window) 5))
+                  (should (equal (with-current-buffer input (buffer-string))
+                                 "unchanged draft"))))))
+        (kill-buffer chat)
+        (kill-buffer input)))))
+
+(ert-deftest pilish-test-transcript-construction-nesting-is-buffer-specific ()
+  "A/B/A nesting coalesces only construction, including caught inner errors."
+  (save-window-excursion
+    (delete-other-windows)
+    (let ((a (generate-new-buffer " *pilish-construction-a*"))
+          (b (generate-new-buffer " *pilish-construction-b*"))
+          (capture (symbol-function 'get-buffer-window-list))
+          captures)
+      (unwind-protect
+          (progn
+            (switch-to-buffer a)
+            (insert "A\n")
+            (let ((b-window (split-window-right)))
+              (set-window-buffer b-window b)
+              (with-current-buffer b (insert "B\n"))
+              (set-window-point b-window (with-current-buffer b (point-max)))
+              (cl-letf (((symbol-function 'get-buffer-window-list)
+                         (lambda (&rest args)
+                           (push (car args) captures)
+                           (apply capture args))))
+                (pilish--with-transcript-construction
+                  (pilish--append-to-chat "outer\n")
+                  (with-current-buffer b
+                    (pilish--append-to-chat "ordinary\n")
+                    (pilish--with-transcript-construction
+                      (pilish--append-to-chat "nested B\n")
+                      (with-current-buffer a
+                        (pilish--with-transcript-construction
+                          (pilish--append-to-chat "nested A\n")))))
+                  (condition-case nil
+                      (pilish--with-transcript-construction
+                        (pilish--append-to-chat "caught\n")
+                        (error "Expected inner error"))
+                    (error nil))
+                  (pilish--append-to-chat "after catch\n"))
+                (should (= (cl-count a captures) 1))
+                (should (= (cl-count b captures) 2))
+                (pilish--append-to-chat "ordinary A\n")
+                (should (= (cl-count a captures) 2)))
+              (should (equal (buffer-string)
+                             "A\nouter\nnested A\ncaught\nafter catch\nordinary A\n"))
+              (should (equal (with-current-buffer b (buffer-string))
+                             "B\nordinary\nnested B\n"))
+              (should (= (window-point b-window)
+                         (with-current-buffer b (point-max))))))
+        (kill-buffer a)
+        (kill-buffer b)))))
+
+(ert-deftest pilish-test-transcript-construction-empty-and-property-only-are-neutral ()
+  "A build with no character edits leaves a final-newline follower untouched."
+  (save-window-excursion
+    (with-temp-buffer
+      (insert "\n")
+      (switch-to-buffer (current-buffer))
+      (goto-char 1)
+      (let ((window (selected-window))
+            (restore (symbol-function 'pilish--restore-tail-window))
+            (restores 0))
+        (cl-letf (((symbol-function 'pilish--restore-tail-window)
+                   (lambda (&rest args)
+                     (cl-incf restores)
+                     (apply restore args))))
+          (should (eq 'empty (pilish--with-transcript-construction 'empty)))
+          (should (= (window-point window) 1))
+          (should (eq 'properties
+                      (pilish--with-transcript-construction
+                        (pilish--with-scroll-preservation
+                          (put-text-property 1 2 'face 'bold))
+                        'properties)))
+          (should (= (window-point window) 1))
+          (should (= (window-start window) 1))
+          (should (= restores 0))
+          (should (null (pilish--with-scroll-preservation 'ordinary)))
+          (should (= (window-point window) 2)))))))
+
+(ert-deftest pilish-test-transcript-construction-unwinds-without-settlement ()
+  "Errors, quits and throws release anchors and leave ordinary appends active."
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (let ((copy (symbol-function 'copy-marker))
+            (restore (symbol-function 'pilish--restore-tail-window))
+            markers restores)
+        (cl-letf (((symbol-function 'copy-marker)
+                   (lambda (&rest args)
+                     (let ((marker (apply copy args)))
+                       (push marker markers)
+                       marker)))
+                  ((symbol-function 'pilish--restore-tail-window)
+                   (lambda (&rest args)
+                     (push t restores)
+                     (apply restore args))))
+          (dolist (exit '(error quit throw))
+            (setq markers nil restores nil)
+            (condition-case nil
+                (catch 'expected
+                  (pilish--with-transcript-construction
+                    (pilish--append-to-chat "built before failure\n")
+                    (pcase exit
+                      ('error (error "Expected failure"))
+                      ('quit (signal 'quit nil))
+                      ('throw (throw 'expected t)))))
+              (error nil)
+              (quit nil))
+            (should-not restores)
+            (should (= (length markers) 1))
+            (should (cl-every (lambda (marker) (null (marker-buffer marker)))
+                              markers))
+            (goto-char (point-max))
+            (pilish--append-to-chat "ordinary after failure\n")
+            (should (= (length restores) 1))
+            (should (= (window-point (selected-window)) (point-max)))))))))
+
+;;; Turn Detection
+
+(ert-deftest pilish-test-turn-index-on-first-heading ()
+  "Turn index is 0 when point is on first You heading."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (should (= (pilish--user-turn-index-at-point) 0))))
+
+(ert-deftest pilish-test-turn-index-in-first-body ()
+  "Turn index is 0 when point is in first user message body."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (forward-line 2) ; skip heading + underline into body
+    (should (= (pilish--user-turn-index-at-point) 0))))
+
+(ert-deftest pilish-test-turn-index-on-underline ()
+  "Turn index is 0 when point is on === underline of first You."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (forward-line 1) ; on ===
+    (should (= (pilish--user-turn-index-at-point) 0))))
+
+(ert-deftest pilish-test-turn-index-on-second-heading ()
+  "Turn index is 1 on second You heading."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (pilish-next-message)
+    (should (= (pilish--user-turn-index-at-point) 1))))
+
+(ert-deftest pilish-test-turn-index-on-assistant-heading ()
+  "Turn index is index of preceding You when point is on Assistant heading."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    ;; Navigate to first You, then move into assistant section
+    (pilish-next-message)
+    (forward-line 4) ; past heading + underline + body + blank → "Assistant"
+    (should (looking-at "Assistant"))
+    (should (= (pilish--user-turn-index-at-point) 0))))
+
+(ert-deftest pilish-test-turn-index-in-assistant-body ()
+  "Turn index is index of preceding You when point is in assistant response."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (pilish-next-message)
+    (forward-line 6) ; heading + underline + body + blank + Assistant + underline → response
+    (should (looking-at "First answer"))
+    (should (= (pilish--user-turn-index-at-point) 0))))
+
+(ert-deftest pilish-test-turn-index-before-first-you ()
+  "Turn index is nil before first You heading."
+  (with-temp-buffer
+    (pilish-test--insert-chat-turns)
+    (goto-char (point-min))
+    (should-not (pilish--user-turn-index-at-point))))
+
+(ert-deftest pilish-test-turn-index-empty-buffer ()
+  "Turn index is nil in empty buffer."
+  (with-temp-buffer
+    (should-not (pilish--user-turn-index-at-point))))
+
+(ert-deftest pilish-test-turn-index-no-false-match ()
+  "Turn index ignores text starting with You without setext underline."
+  (with-temp-buffer
+    (insert "You mentioned something\nRegular text\n\n"
+            "You · 10:00\n===========\nFirst question\n")
+    (goto-char (point-min))
+    ;; Point is on "You mentioned" which has no === underline
+    (should-not (pilish--user-turn-index-at-point))
+    ;; Move to the real heading
+    (goto-char (point-max))
+    (should (= (pilish--user-turn-index-at-point) 0))))
+
+;;; You Heading Detection
+
+(ert-deftest pilish-test-heading-re-matches-plain-you ()
+  "Heading regex matches bare `You' at start of line."
+  (should (string-match-p pilish--you-heading-re "You")))
+
+(ert-deftest pilish-test-heading-re-matches-you-with-timestamp ()
+  "Heading regex matches `You · 22:10' at start of line."
+  (should (string-match-p pilish--you-heading-re "You · 22:10")))
+
+(ert-deftest pilish-test-heading-re-rejects-you-colon ()
+  "Heading regex does not match `You:' (old broken pattern)."
+  (should-not (string-match-p pilish--you-heading-re "You: hello")))
+
+(ert-deftest pilish-test-heading-re-rejects-mid-line ()
+  "Heading regex does not match `You' mid-line."
+  (should-not (string-match-p pilish--you-heading-re "  You · 22:10")))
+
+(ert-deftest pilish-test-heading-re-rejects-you-prefix ()
+  "Heading regex does not match words starting with You like `Your'."
+  (should-not (string-match-p pilish--you-heading-re "Your code is fine")))
+
+(ert-deftest pilish-test-at-you-heading-p-true ()
+  "Predicate returns t when on a valid You setext heading."
+  (with-temp-buffer
+    (insert "You · 22:10\n===========\n")
+    (goto-char (point-min))
+    (should (pilish--at-you-heading-p))))
+
+(ert-deftest pilish-test-at-you-heading-p-no-underline ()
+  "Predicate returns nil when You line lacks setext underline."
+  (with-temp-buffer
+    (insert "You · 22:10\nSome text\n")
+    (goto-char (point-min))
+    (should-not (pilish--at-you-heading-p))))
+
+(ert-deftest pilish-test-at-you-heading-p-short-underline ()
+  "Predicate returns t with minimum 3-char underline."
+  (with-temp-buffer
+    (insert "You\n===\n")
+    (goto-char (point-min))
+    (should (pilish--at-you-heading-p))))
+
+(ert-deftest pilish-test-at-you-heading-p-wrong-line ()
+  "Predicate returns nil when not on the heading line."
+  (with-temp-buffer
+    (insert "You · 22:10\n===========\nBody text\n")
+    (goto-char (point-max))
+    (forward-line -1)  ; on "Body text"
+    (should-not (pilish--at-you-heading-p))))
+
+;;; Hot Tail
+
+(defun pilish-ui-test--forward-hot-tail-position (count)
+  "Return the boundary selected by a full forward scan for COUNT."
+  (let (headings)
+    (save-excursion
+      (goto-char (point-min))
+      (while (re-search-forward pilish--turn-heading-re nil t)
+        (let ((candidate (match-beginning 0)))
+          (save-excursion
+            (goto-char candidate)
+            (when (pilish--at-turn-heading-p)
+              (push candidate headings))))))
+    (setq headings (nreverse headings))
+    (cond
+     ((zerop count) (point-max))
+     ((<= (length headings) count) (point-min))
+     (t (nth (- (length headings) count) headings)))))
+
+(ert-deftest pilish-test-hot-tail-boundary-keeps-buffer-hot-when-few-turns ()
+  "Buffers with at most N headed turns stay entirely hot."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let ((inhibit-read-only t))
+      (insert "You · 10:00\n===========\nFirst question\n\n"
+              "Assistant\n=========\nFirst answer\n\n"
+              "You · 10:05\n===========\nSecond question\n"))
+    (let ((pilish-hot-tail-turn-count 3))
+      (pilish--update-hot-tail-boundary)
+      (should (= (marker-position pilish--hot-tail-start)
+                 (point-min))))))
+
+(ert-deftest pilish-test-hot-tail-boundary-moves-to-nth-newest-heading ()
+  "Hot tail starts at the Nth newest headed turn boundary."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let ((inhibit-read-only t))
+      (insert "You · 10:00\n===========\nFirst question\n\n"
+              "Assistant\n=========\nFirst answer\n\n"
+              "You · 10:05\n===========\nSecond question\n\n"
+              "Assistant\n=========\nSecond answer\n\n"
+              "You · 10:10\n===========\nThird question\n"))
+    (let ((pilish-hot-tail-turn-count 3))
+      (pilish--update-hot-tail-boundary)
+      (goto-char (marker-position pilish--hot-tail-start))
+      (should (looking-at "You · 10:05")))))
+
+(ert-deftest pilish-test-hot-tail-boundary-exact-count-keeps-preamble-hot ()
+  "Exactly N headings do not separate a preamble from the hot tail."
+  (with-temp-buffer
+    (insert "Banner\n\nYou\n===\nFirst\n\nAssistant\n=========\nSecond\n")
+    (setq-local pilish--hot-tail-start (copy-marker (point-min) nil))
+    (let ((pilish-hot-tail-turn-count 2))
+      (pilish--update-hot-tail-boundary)
+      (should (= (marker-position pilish--hot-tail-start) (point-min))))))
+
+(ert-deftest pilish-test-hot-tail-boundary-zero-and-empty-buffer ()
+  "A zero count selects point-max.  An empty buffer stays hot with a positive count."
+  (with-temp-buffer
+    (insert "You\n===\nBody\n")
+    (setq-local pilish--hot-tail-start (copy-marker (point-min) nil))
+    (let ((pilish-hot-tail-turn-count 0))
+      (pilish--update-hot-tail-boundary)
+      (should (= (marker-position pilish--hot-tail-start) (point-max))))
+    (erase-buffer)
+    (let ((pilish-hot-tail-turn-count 2))
+      (pilish--update-hot-tail-boundary)
+      (should (= (marker-position pilish--hot-tail-start) (point-min))))))
+
+(ert-deftest pilish-test-hot-tail-boundary-matches-forward-scan ()
+  "The boundary matches a full forward scan across deterministic histories."
+  (dolist (preamble '(nil t))
+    (dotimes (heading-count 6)
+      (let ((text
+             (concat
+              (if preamble "Banner\n\n" "")
+              (mapconcat
+               #'identity
+               (cl-loop for i below heading-count
+                        collect (format "%s\n%s\nbody %d\nYou\nnot an underline\n\n"
+                                        (if (zerop (mod i 2)) "You" "Assistant")
+                                        (if (zerop (mod i 2)) "===" "=========")
+                                        i))
+               ""))))
+        (dotimes (count 5)
+          (with-temp-buffer
+            (insert text)
+            (setq-local pilish--hot-tail-start (copy-marker (point-min) nil))
+            (setq-local pilish-hot-tail-turn-count count)
+            (let ((expected (pilish-ui-test--forward-hot-tail-position count))
+                  (marker pilish--hot-tail-start)
+                  (point (point)))
+              (pilish--update-hot-tail-boundary)
+              (should (= (marker-position pilish--hot-tail-start) expected))
+              (should (eq pilish--hot-tail-start marker))
+              (should (= (point) point)))))))))
+
+(ert-deftest pilish-test-hot-tail-boundary-respects-narrowing ()
+  "Only accessible headings and accessible bounds affect the boundary."
+  (with-temp-buffer
+    (insert "You\n===\nOutside\n\n"
+            "Assistant\n=========\nAccessible first\n\n"
+            "You · later\n===\nAccessible second\n")
+    (goto-char (point-min))
+    (search-forward "Assistant\n")
+    (narrow-to-region (match-beginning 0) (point-max))
+    (setq-local pilish--hot-tail-start (copy-marker (point-min) nil))
+    (dolist (count '(1 2 3))
+      (let ((pilish-hot-tail-turn-count count))
+        (let ((expected (pilish-ui-test--forward-hot-tail-position count))
+              (minimum (point-min))
+              (maximum (point-max)))
+          (pilish--update-hot-tail-boundary)
+          (should (= (marker-position pilish--hot-tail-start) expected))
+          (should (= (point-min) minimum))
+          (should (= (point-max) maximum)))))))
+
+(ert-deftest pilish-test-hot-tail-boundary-preserves-marker-contract ()
+  "Updating preserves point, marker identity, and marker insertion behavior."
+  (with-temp-buffer
+    (insert "Banner\n\nYou\n===\nOne\n\nAssistant\n=========\nTwo\n\n"
+            "You\n===\nThree\n")
+    (setq-local pilish--hot-tail-start (copy-marker (point-min) nil))
+    (let ((pilish-hot-tail-turn-count 2)
+          (marker pilish--hot-tail-start))
+      (goto-char (point-max))
+      (let ((original-point (point)))
+        (pilish--update-hot-tail-boundary)
+        (should (= (point) original-point)))
+      (should (eq pilish--hot-tail-start marker))
+      (should (eq (marker-buffer marker) (current-buffer)))
+      (should-not (marker-insertion-type marker))
+      (let ((boundary (marker-position marker)))
+        (goto-char boundary)
+        (insert "Inserted at the boundary\n")
+        (should (= (marker-position marker) boundary))
+        (should (save-excursion
+                  (goto-char boundary)
+                  (looking-at "Inserted at the boundary")))))))
+
+;;; Executable Customization
+
+(ert-deftest pilish-test-check-pi-uses-executable ()
+  "check-pi uses car of `pilish-executable' for lookup."
+  (let ((pilish-executable '("npx" "pi"))
+        looked-up-command
+        remote-flag)
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (cmd &optional remote)
+                 (setq looked-up-command cmd
+                       remote-flag remote)
+                 (when (equal cmd "npx")
+                   "/usr/bin/npx"))))
+      (should (pilish--check-pi))
+      (should (equal looked-up-command "npx"))
+      (should (eq remote-flag t)))))
+
+(ert-deftest pilish-test-check-pi-returns-nil-when-missing ()
+  "check-pi returns nil when executable is not found."
+  (let ((pilish-executable '("nonexistent-binary")))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_cmd &optional _remote) nil)))
+      (should-not (pilish--check-pi)))))
+
+(ert-deftest pilish-test-check-pi-uses-remote-executable-find ()
+  "Remote sessions should look for pi on the remote host."
+  (let ((pilish-executable '("pi"))
+        (default-directory "/ssh:pi-host:/home/pi/project/")
+        (calls nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (cmd &optional remote)
+                 (push (list cmd remote default-directory) calls)
+                 (and remote "/ssh:pi-host:/usr/bin/pi"))))
+      (should (pilish--check-pi))
+      (should (member '("pi" t "/ssh:pi-host:/home/pi/project/") calls))
+      (should-not (cl-find-if (lambda (call)
+                                (and (equal (car call) "pi")
+                                     (null (cadr call))))
+                              calls)))))
+
+(ert-deftest pilish-test-check-pi-multi-hop-uses-full-prefix-candidates ()
+  "Multi-hop remote dependency lookup builds candidates with the full route."
+  (let ((pilish-executable '("pi"))
+        (exec-path '("/usr/local/bin" "/usr/bin" nil))
+        (exec-suffixes '(""))
+        (default-directory "/ssh:bastion|sudo:root@pi-host:/srv/project/")
+        (checked nil))
+    (cl-letf (((symbol-function 'exec-path)
+               (lambda () exec-path))
+              ((symbol-function 'executable-find)
+               (lambda (&rest _)
+                 (ert-fail "multi-hop lookup should not call executable-find")))
+              ((symbol-function 'file-executable-p)
+               (lambda (path)
+                 (push path checked)
+                 (equal path
+                        "/ssh:bastion|sudo:root@pi-host:/usr/bin/pi"))))
+      (should (pilish--check-pi))
+      (should (member "/ssh:bastion|sudo:root@pi-host:/usr/local/bin/pi"
+                      checked))
+      (should (member "/ssh:bastion|sudo:root@pi-host:/usr/bin/pi"
+                      checked))
+      (should-not (cl-some (lambda (path)
+                             (string-prefix-p "/sudo:root@pi-host:" path))
+                           checked)))))
+
+(ert-deftest pilish-test-check-pi-multi-hop-uses-remote-exec-path ()
+  "Multi-hop dependency lookup asks TRAMP for the remote PATH entries."
+  (let ((pilish-executable '("pi"))
+        (exec-path '("/local-only/bin"))
+        (exec-suffixes '(""))
+        (remote-dir "/ssh:bastion|sudo:root@pi-host:/srv/project/")
+        (checked nil))
+    (cl-letf (((symbol-function 'exec-path)
+               (lambda ()
+                 (should (equal default-directory remote-dir))
+                 '("/opt/remote/bin")))
+              ((symbol-function 'executable-find)
+               (lambda (&rest _)
+                 (ert-fail "multi-hop lookup should not call executable-find")))
+              ((symbol-function 'file-executable-p)
+               (lambda (path)
+                 (push path checked)
+                 (equal path
+                        "/ssh:bastion|sudo:root@pi-host:/opt/remote/bin/pi"))))
+      (let ((default-directory remote-dir))
+        (should (pilish--check-pi)))
+      (should (equal checked
+                     '("/ssh:bastion|sudo:root@pi-host:/opt/remote/bin/pi"))))))
+
+(ert-deftest pilish-test-check-dependencies-no-local-warning-for-remote-pi ()
+  "Remote dependency checks should not warn just because local PATH lacks pi."
+  (let ((pilish-executable '("pi"))
+        (default-directory "/ssh:pi-host:/home/pi/project/")
+        (warning-text nil)
+        (remote-lookup nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_cmd &optional remote)
+                 (setq remote-lookup remote)
+                 (and remote "/ssh:pi-host:/usr/bin/pi")))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _)
+                 (setq warning-text msg)))
+              ((symbol-function 'pilish--maybe-install-essential-grammars)
+               #'ignore)
+              ((symbol-function 'pilish--maybe-warn-incompatible-markdown-grammar)
+               #'ignore)
+              ((symbol-function 'pilish--maybe-install-optional-grammars)
+               #'ignore))
+      (pilish--check-dependencies)
+      (should remote-lookup)
+      (should-not warning-text))))
+
+(ert-deftest pilish-test-check-dependencies-warning-names-remote-path ()
+  "Remote missing-pi warnings explain that the remote PATH was checked."
+  (let ((pilish-executable '("pi"))
+        (warning-text nil))
+    (cl-letf (((symbol-function 'executable-find)
+               (lambda (_cmd &optional _remote) nil))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (setq warning-text msg)))
+              ((symbol-function 'pilish--maybe-install-essential-grammars)
+               #'ignore)
+              ((symbol-function 'pilish--maybe-warn-incompatible-markdown-grammar)
+               #'ignore)
+              ((symbol-function 'pilish--maybe-install-optional-grammars)
+               #'ignore))
+      (pilish--check-dependencies "/ssh:pi-host:/home/pi/project/")
+      (should (string-match-p "remote PATH (/ssh:pi-host:)" warning-text))
+      (should (string-match-p "npm install -g @earendil-works/pi-coding-agent" warning-text))
+      (should-not (string-match-p "@earendil-works/pi-coding-agent@" warning-text)))))
+
+(ert-deftest pilish-test-check-dependencies-warning-names-multi-hop-remote-path ()
+  "Remote missing-pi warnings preserve the full TRAMP route."
+  (let ((pilish-executable '("pi"))
+        (exec-path '("/usr/bin"))
+        (warning-text nil))
+    (cl-letf (((symbol-function 'exec-path)
+               (lambda () exec-path))
+              ((symbol-function 'pilish--remote-executable-file-p)
+               (lambda (_path) nil))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (setq warning-text msg)))
+              ((symbol-function 'pilish--maybe-install-essential-grammars)
+               #'ignore)
+              ((symbol-function 'pilish--maybe-warn-incompatible-markdown-grammar)
+               #'ignore)
+              ((symbol-function 'pilish--maybe-install-optional-grammars)
+               #'ignore))
+      (pilish--check-dependencies
+       "/ssh:bastion|sudo:root@pi-host:/srv/project/")
+      (should (string-match-p
+               (regexp-quote "remote PATH (/ssh:bastion|sudo:root@pi-host:)")
+               warning-text)))))
+
+(ert-deftest pilish-test-check-dependencies-uses-explicit-directory ()
+  "An explicit dependency directory overrides the caller buffer context."
+  (let ((checked-directory nil))
+    (cl-letf (((symbol-function 'pilish--check-pi)
+               (lambda (&optional directory)
+                 (setq checked-directory directory)
+                 t))
+              ((symbol-function 'pilish--maybe-install-essential-grammars)
+               #'ignore)
+              ((symbol-function 'pilish--maybe-warn-incompatible-markdown-grammar)
+               #'ignore)
+              ((symbol-function 'pilish--maybe-install-optional-grammars)
+               #'ignore))
+      (pilish--check-dependencies "/ssh:pi-host:/home/pi/project/")
+      (should (equal checked-directory "/ssh:pi-host:/home/pi/project/")))))
+
+(ert-deftest pilish-test-executable-default-value ()
+  "Default value of pilish-executable is (\"pi\")."
+  (should (equal (default-value 'pilish-executable) '("pi"))))
+
+(ert-deftest pilish-test-check-dependencies-names-executable ()
+  "Warning message includes the actual executable name."
+  (let ((pilish-executable '("my-custom-pi"))
+        (warning-text nil))
+    (cl-letf (((symbol-function 'executable-find) (lambda (_cmd &optional _remote) nil))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (setq warning-text msg))))
+      (pilish--check-dependencies)
+      (should (string-match-p "my-custom-pi" warning-text))
+      (should (string-match-p
+               "npm install -g @earendil-works/pi-coding-agent"
+               warning-text))
+      (should-not (string-match-p
+                   "npm install -g @earendil-works/pi-coding-agent@"
+                   warning-text)))))
+
+;;; Essential Grammar Install Prompt (markdown + markdown-inline)
+
+(ert-deftest pilish-test-essential-grammars-ignore-optional-gaps ()
+  "Only Markdown grammars should count as essential for chat rendering."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (lang &rest _)
+               (memq lang '(markdown markdown-inline)))))
+    (should-not (pilish--missing-essential-grammars))))
+
+(ert-deftest pilish-test-missing-essential-grammars-detected ()
+  "Detect when markdown or markdown-inline grammars are missing."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (lang &rest _)
+               (not (memq lang '(markdown markdown-inline))))))
+    (should (equal '(markdown markdown-inline)
+                   (pilish--missing-essential-grammars)))))
+
+(ert-deftest pilish-test-no-missing-essential-grammars ()
+  "Return nil when both essential grammars are installed."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (_lang &rest _) t)))
+    (should-not (pilish--missing-essential-grammars))))
+
+(defun pilish-test--fake-grammar-install (dir)
+  "Return an installer stub that writes LANG libraries into DIR."
+  (lambda (lang &optional _out-dir)
+    (with-temp-file
+        (expand-file-name
+         (concat "libtree-sitter-" (symbol-name lang)
+                 (or (car dynamic-library-suffixes) ".so"))
+         dir)
+      (insert "test build"))))
+
+(ert-deftest pilish-test-essential-grammars-auto-install ()
+  "Auto-install essential grammars without prompting when action is `auto'."
+  (let* ((dir (make-temp-file "pilish-grammars" t))
+         (installed-langs nil)
+         (treesit-extra-load-path (list dir))
+         (noninteractive nil)
+         (pilish-essential-grammar-action 'auto))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-language-available-p)
+                   (lambda (lang &rest _)
+                     (not (memq lang '(markdown markdown-inline)))))
+                  ((symbol-function 'treesit-install-language-grammar)
+                   (lambda (lang &optional out-dir)
+                     (push lang installed-langs)
+                     (funcall (pilish-test--fake-grammar-install dir)
+                              lang out-dir)))
+                  ((symbol-function 'message) #'ignore))
+          (pilish--maybe-install-essential-grammars)
+          (should (memq 'markdown installed-langs))
+          (should (memq 'markdown-inline installed-langs)))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-essential-grammars-prompt-accept ()
+  "Install essential grammars when action is `prompt' and user accepts."
+  (let* ((dir (make-temp-file "pilish-grammars" t))
+         (installed-langs nil)
+         (treesit-extra-load-path (list dir))
+         (noninteractive nil)
+         (pilish-essential-grammar-action 'prompt))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-language-available-p)
+                   (lambda (lang &rest _)
+                     (not (memq lang '(markdown markdown-inline)))))
+                  ((symbol-function 'treesit-install-language-grammar)
+                   (lambda (lang &optional out-dir)
+                     (push lang installed-langs)
+                     (funcall (pilish-test--fake-grammar-install dir)
+                              lang out-dir)))
+                  ((symbol-function 'y-or-n-p) (lambda (_prompt) t))
+                  ((symbol-function 'message) #'ignore))
+          (pilish--maybe-install-essential-grammars)
+          (should (memq 'markdown installed-langs))
+          (should (memq 'markdown-inline installed-langs)))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-essential-grammars-prompt-decline ()
+  "Warn without installing when action is `prompt' and user declines."
+  (let ((installed nil)
+        (warning-message nil)
+        (noninteractive nil)
+        (pilish-essential-grammar-action 'prompt))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (not (memq lang '(markdown markdown-inline)))))
+              ((symbol-function 'treesit-install-language-grammar)
+               (lambda (_lang &optional _out-dir)
+                 (setq installed t)))
+              ((symbol-function 'y-or-n-p) (lambda (_prompt) nil))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (setq warning-message msg)))
+              ((symbol-function 'message) #'ignore))
+      (pilish--maybe-install-essential-grammars)
+      (should-not installed)
+      (should (stringp warning-message))
+      (should (string-match-p "not installed" warning-message)))))
+
+(ert-deftest pilish-test-essential-grammars-warn-only ()
+  "Only warn when action is `warn' — never attempt installation."
+  (let ((installed nil)
+        (warning-message nil)
+        (noninteractive nil)
+        (pilish-essential-grammar-action 'warn))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (not (memq lang '(markdown markdown-inline)))))
+              ((symbol-function 'treesit-install-language-grammar)
+               (lambda (_lang &optional _out-dir)
+                 (setq installed t)))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (setq warning-message msg)))
+              ((symbol-function 'message) #'ignore))
+      (pilish--maybe-install-essential-grammars)
+      (should-not installed)
+      (should (stringp warning-message))
+      (should (string-match-p "not installed" warning-message)))))
+
+(ert-deftest pilish-test-essential-grammars-error-without-cc ()
+  "Show clear error when C compiler is not available."
+  (let ((noninteractive nil)
+        (error-message nil)
+        (pilish-essential-grammar-action 'auto))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (not (memq lang '(markdown markdown-inline)))))
+              ((symbol-function 'treesit-install-language-grammar)
+               (lambda (_lang &optional _out-dir)
+                 (error "Cannot find suitable compiler")))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (setq error-message msg)))
+              ((symbol-function 'message) #'ignore))
+      (pilish--maybe-install-essential-grammars)
+      (should (stringp error-message))
+      (should (string-match-p "C compiler" error-message)))))
+
+(ert-deftest pilish-test-essential-grammars-no-install-in-batch ()
+  "Never install essential grammars in batch mode."
+  (let ((noninteractive t)
+        (installed nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (not (memq lang '(markdown markdown-inline)))))
+              ((symbol-function 'treesit-install-language-grammar)
+               (lambda (_lang &optional _out-dir)
+                 (setq installed t))))
+      (pilish--maybe-install-essential-grammars)
+      (should-not installed))))
+
+;;; Markdown Grammar Compatibility
+
+(ert-deftest pilish-test-incompatible-markdown-grammar-detected ()
+  "Detect an installed Markdown grammar that lacks required table nodes."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (_lang &rest _) t))
+            ((symbol-function 'pilish--markdown-grammar-compatible-p)
+             (lambda () nil)))
+    (should (pilish--markdown-grammar-incompatible-p))))
+
+(ert-deftest pilish-test-missing-markdown-grammar-not-incompatible ()
+  "Missing Markdown grammar is handled by the missing-essential path."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (_lang &rest _) nil))
+            ((symbol-function 'pilish--markdown-grammar-compatible-p)
+             (lambda () nil)))
+    (should-not (pilish--markdown-grammar-incompatible-p))))
+
+(ert-deftest pilish-test-incompatible-markdown-grammar-warns-once ()
+  "Warn once when the loaded Markdown grammar is incompatible."
+  (let ((noninteractive nil)
+        (pilish--markdown-grammar-warning-done nil)
+        (warnings nil))
+    (cl-letf (((symbol-function 'pilish--markdown-grammar-incompatible-p)
+               (lambda () t))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (push msg warnings))))
+      (pilish--maybe-warn-incompatible-markdown-grammar)
+      (pilish--maybe-warn-incompatible-markdown-grammar)
+      (should (= 1 (length warnings)))
+      (should (string-match-p "Incompatible Markdown" (car warnings)))
+      (should (string-match-p "treesit-extra-load-path" (car warnings))))))
+
+;;; Markdown Grammar Runtime Safety
+
+(defun pilish-test--markdown-stress-program (depth)
+  "Return an Elisp program that parses DEPTH nested blockquotes.
+The program runs in a child Emacs: a vulnerable Markdown grammar
+corrupts native parser state and can abort the process, so the parse
+must not run in the test runner itself."
+  (format "(progn
+  (require 'treesit)
+  (dolist (dir (split-string (or (getenv \"PILISH_TEST_GRAMMAR_PATHS\") \"\")
+                             path-separator t))
+    (add-to-list 'treesit-extra-load-path dir))
+  (with-temp-buffer
+    (insert (concat
+             (mapconcat (lambda (_) \">\") (number-sequence 1 %d) \" \")
+             \" text\\n\\n\"
+             \"| a | b |\\n| - | - |\\n| 1 | 2 |\\n\"))
+    (let* ((parser (treesit-parser-create 'markdown))
+           (root (treesit-parser-root-node parser)))
+      (unless (treesit-query-capture root '((pipe_table) @table))
+        (error \"Markdown table query returned nothing\"))))
+  (princ \"PILISH-STRESS-OK\"))"
+          depth))
+
+(ert-deftest pilish-test-markdown-grammar-survives-deep-nesting ()
+  "Deeply nested Markdown must not corrupt the process that parses it.
+The Markdown scanner serialized its open-block stack into a fixed
+1024-byte buffer.  A grammar without the upstream overflow fix aborts
+Emacs once 255 blocks are open, so parse in a child Emacs and require
+a clean exit."
+  (skip-unless (treesit-language-available-p 'markdown))
+  (let* ((emacs (or (and invocation-directory invocation-name
+                         (expand-file-name invocation-name invocation-directory))
+                    (executable-find "emacs")))
+         (paths (mapconcat #'identity treesit-extra-load-path path-separator))
+         (process-environment
+          (cons (concat "PILISH_TEST_GRAMMAR_PATHS=" paths)
+                process-environment))
+         (output (with-temp-buffer
+                   (let ((status (call-process
+                                  emacs nil t nil
+                                  "--batch" "-Q" "--eval"
+                                  (pilish-test--markdown-stress-program 600))))
+                     (list status (buffer-string))))))
+    (pcase-let ((`(,status ,text) output))
+      (unless (and (integerp status) (zerop status)
+                   (string-match-p "PILISH-STRESS-OK" text))
+        (ert-fail
+         (format "Deep Markdown nesting killed the parser process (status %s).\n\
+Reinstall the Markdown grammars with C-u M-x pilish-install-grammars.\n%s"
+                 status text))))))
+
+(ert-deftest pilish-test-reinstall-grammars-replaces-installed-libraries ()
+  "Reinstalling deletes installed Markdown libraries and builds them again.
+Without this, `pilish-install-grammars' would report an outdated
+grammar as installed and never replace it."
+  (let* ((dir (make-temp-file "pilish-grammars" t))
+         (library (expand-file-name
+                   (concat "libtree-sitter-markdown"
+                           (or (car dynamic-library-suffixes) ".so"))
+                   dir))
+         (treesit-extra-load-path (list dir))
+         (installed nil))
+    (unwind-protect
+        (progn
+          (with-temp-file library (insert "old build"))
+          (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                     (lambda (lang &optional _dir)
+                       (push lang installed)
+                       (with-temp-file
+                           (expand-file-name
+                            (concat "libtree-sitter-" (symbol-name lang)
+                                    (or (car dynamic-library-suffixes) ".so"))
+                            dir)
+                         (insert "new build"))))
+                    ;; Keep the real user grammar directory out of the test.
+                    ((symbol-function 'locate-user-emacs-file)
+                     (lambda (&rest _) (expand-file-name "none" dir))))
+            (pilish-install-grammars t))
+          (should (file-exists-p library))
+          (should (memq 'markdown installed))
+          (should (memq 'markdown-inline installed)))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-install-grammars-reports-missing-library ()
+  "An installer that only warns must not count as a successful install.
+`treesit-install-language-grammar' reports failures as warnings, so the
+grammar count is only truthful when the built library is checked."
+  (let* ((dir (make-temp-file "pilish-grammars" t))
+         (treesit-extra-load-path (list dir))
+         (warnings nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                   (lambda (_lang &optional _dir) nil))
+                  ((symbol-function 'locate-user-emacs-file)
+                   (lambda (&rest _) (expand-file-name "none" dir)))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type msg &rest _) (push msg warnings))))
+          (should (= 0 (pilish--install-grammars '(markdown))))
+          (should (= 1 (length warnings)))
+          (should (string-match-p "Failed to install" (car warnings))))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-markdown-grammar-source-tracks-abi ()
+  "Use upstream v0.5.4 on ABI 15 and the fixed backport below that."
+  (cl-letf (((symbol-function 'treesit-library-abi-version)
+             (lambda (&rest _) 14)))
+    (should (equal (pilish--markdown-grammar-source)
+                   pilish--markdown-backport-source)))
+  (cl-letf (((symbol-function 'treesit-library-abi-version)
+             (lambda (&rest _) 15)))
+    (should (equal (pilish--markdown-grammar-source)
+                   pilish--markdown-upstream-source))))
+
+(ert-deftest pilish-test-install-grammars-use-pilish-recipes ()
+  "Pilish installs from its own recipe when another one comes first.
+A newer Emacs ships a vulnerable v0.4.1 pin for its built-in Markdown
+mode, and that entry can precede ours in
+`treesit-language-source-alist'."
+  (let* ((dir (make-temp-file "pilish-grammars" t))
+         (treesit-extra-load-path (list dir))
+         (treesit-language-source-alist
+          (cons '(markdown "https://example.invalid/other" "v9.9.9" "src")
+                treesit-language-source-alist))
+         (recipe nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                   (lambda (lang &optional _dir)
+                     (setq recipe (assoc lang treesit-language-source-alist))
+                     (funcall (pilish-test--fake-grammar-install dir) lang)))
+                  ((symbol-function 'locate-user-emacs-file)
+                   (lambda (&rest _) (expand-file-name "none" dir))))
+          (pilish--install-grammars '(markdown))
+          (should (equal (nth 1 recipe)
+                         (nth 0 (pilish--markdown-grammar-source))))
+          (should (equal (nth 2 recipe)
+                         (nth 1 (pilish--markdown-grammar-source)))))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-reinstall-keeps-newer-grammar ()
+  "Reinstalling must not downgrade a grammar newer than the pinned build."
+  (let* ((dir (make-temp-file "pilish-grammars" t))
+         (suffix (or (car dynamic-library-suffixes) ".so"))
+         (markdown-lib (expand-file-name
+                        (concat "libtree-sitter-markdown" suffix) dir))
+         (inline-lib (expand-file-name
+                      (concat "libtree-sitter-markdown-inline" suffix) dir))
+         (treesit-extra-load-path (list dir))
+         (installed nil))
+    (unwind-protect
+        (progn
+          (with-temp-file markdown-lib (insert "newer build"))
+          (with-temp-file inline-lib (insert "old build"))
+          (cl-letf (((symbol-function 'treesit-language-abi-version)
+                     (lambda (lang)
+                       (if (eq lang 'markdown)
+                           (1+ pilish--markdown-grammar-abi-version)
+                         pilish--markdown-grammar-abi-version)))
+                    ((symbol-function 'treesit-install-language-grammar)
+                     (lambda (lang &optional _dir)
+                       (push lang installed)
+                       (funcall (pilish-test--fake-grammar-install dir) lang)))
+                    ((symbol-function 'locate-user-emacs-file)
+                     (lambda (&rest _) (expand-file-name "none" dir))))
+            (pilish-install-grammars t))
+          (should (equal (with-temp-buffer
+                           (insert-file-contents markdown-lib)
+                           (buffer-string))
+                         "newer build"))
+          (should-not (memq 'markdown installed))
+          (should (memq 'markdown-inline installed)))
+      (delete-directory dir t))))
+
+;;; Grammar Recipe Validation
+
+(ert-deftest pilish-test-grammar-recipes-all-registered ()
+  "All grammar recipes are registered in `treesit-language-source-alist'.
+Catches accidentally dropped or malformed entries."
+  (dolist (recipe pilish-grammar-recipes)
+    (let ((lang (car recipe)))
+      (should (assq lang treesit-language-source-alist)))))
+
+(ert-deftest pilish-test-grammar-recipes-have-required-fields ()
+  "Every recipe has LANG, URL, and REVISION.  SOURCE-DIR is optional."
+  (dolist (recipe pilish-grammar-recipes)
+    (should (symbolp (nth 0 recipe)))      ; LANG
+    (should (stringp (nth 1 recipe)))      ; URL
+    (should (string-prefix-p "https://" (nth 1 recipe)))
+    (should (stringp (nth 2 recipe)))))    ; REVISION
+
+(ert-deftest pilish-test-grammar-recipes-source-dir-entries ()
+  "Recipes needing SOURCE-DIR have it set (monorepos with subdirectories)."
+  (let ((ts-recipe (assq 'typescript treesit-language-source-alist))
+        (tsx-recipe (assq 'tsx treesit-language-source-alist))
+        (php-recipe (assq 'php treesit-language-source-alist)))
+    ;; These share repos with other parsers — SOURCE-DIR is required
+    (should (equal (nth 3 ts-recipe) "typescript/src"))
+    (should (equal (nth 3 tsx-recipe) "tsx/src"))
+    (should (equal (nth 3 php-recipe) "php/src"))))
+
+;;; Optional Grammar Install Prompt (embedded languages)
+
+(ert-deftest pilish-test-missing-optional-grammars-detected ()
+  "Detect missing optional grammars from recipe list."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (lang &rest _)
+               (memq lang '(python bash)))))
+    (let ((missing (pilish--missing-optional-grammars)))
+      ;; python and bash are installed, rest should be missing
+      (should-not (memq 'python missing))
+      (should-not (memq 'bash missing))
+      (should-not (memq 'markdown missing))
+      (should-not (memq 'markdown-inline missing))
+      (should (memq 'javascript missing))
+      (should (memq 'rust missing)))))
+
+(ert-deftest pilish-test-optional-grammars-offer-install ()
+  "Offer to install optional grammars when missing."
+  (let ((pilish--grammar-prompt-done nil)
+        (pilish-grammar-declined-set nil)
+        (noninteractive nil)
+        (installed-langs nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (memq lang '(markdown markdown-inline python))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt) t))
+              ((symbol-function 'treesit-install-language-grammar)
+               (lambda (lang &optional _out-dir)
+                 (push lang installed-langs)))
+              ((symbol-function 'message) #'ignore))
+      (pilish--maybe-install-optional-grammars)
+      ;; Should have installed some grammars (not python, already present)
+      (should installed-langs)
+      (should-not (memq 'python installed-langs))
+      (should (memq 'javascript installed-langs)))))
+
+(ert-deftest pilish-test-optional-grammars-decline-persists ()
+  "Declining optional grammars saves the missing set via customize."
+  (let ((pilish--grammar-prompt-done nil)
+        (pilish-grammar-declined-set nil)
+        (noninteractive nil)
+        (saved-var nil)
+        (saved-val nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (memq lang '(markdown markdown-inline))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt) nil))
+              ((symbol-function 'customize-save-variable)
+               (lambda (var val)
+                 (setq saved-var var saved-val val)
+                 (set var val)))
+              ((symbol-function 'message) #'ignore))
+      (pilish--maybe-install-optional-grammars)
+      (should (eq saved-var 'pilish-grammar-declined-set))
+      ;; Saved the full set of missing grammars
+      (should (memq 'javascript saved-val))
+      (should (memq 'rust saved-val)))))
+
+(ert-deftest pilish-test-optional-grammars-no-repeat-in-session ()
+  "No re-prompt after already prompted this session."
+  (let ((pilish--grammar-prompt-done t)
+        (pilish-grammar-declined-set nil)
+        (noninteractive nil)
+        (prompted nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (memq lang '(markdown markdown-inline))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt) (setq prompted t))))
+      (pilish--maybe-install-optional-grammars)
+      (should-not prompted))))
+
+(ert-deftest pilish-test-optional-grammars-no-prompt-when-all-installed ()
+  "No prompt when all optional grammars are already installed."
+  (let ((pilish--grammar-prompt-done nil)
+        (pilish-grammar-declined-set nil)
+        (noninteractive nil)
+        (prompted nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (_lang &rest _) t))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt) (setq prompted t))))
+      (pilish--maybe-install-optional-grammars)
+      (should-not prompted))))
+
+(ert-deftest pilish-test-optional-grammars-no-prompt-in-batch ()
+  "Never prompt for optional grammars in batch mode."
+  (let ((pilish--grammar-prompt-done nil)
+        (pilish-grammar-declined-set nil)
+        (noninteractive t)
+        (prompted nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (memq lang '(markdown markdown-inline))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt) (setq prompted t))))
+      (pilish--maybe-install-optional-grammars)
+      (should-not prompted))))
+
+(ert-deftest pilish-test-optional-grammars-cc-failure-reports ()
+  "Report failure with actionable error when compiler is missing."
+  (let ((pilish--grammar-prompt-done nil)
+        (pilish-grammar-declined-set nil)
+        (noninteractive nil)
+        (install-attempts 0)
+        (warning-text nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (memq lang '(markdown markdown-inline))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt) t))
+              ((symbol-function 'treesit-install-language-grammar)
+               (lambda (_lang &optional _out-dir)
+                 (cl-incf install-attempts)
+                 (error "Cannot find suitable compiler")))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (setq warning-text msg)))
+              ((symbol-function 'message) #'ignore))
+      (pilish--maybe-install-optional-grammars)
+      (should (= install-attempts 1))
+      (should (stringp warning-text))
+      (should (string-match-p "C compiler" warning-text)))))
+
+(ert-deftest pilish-test-optional-grammars-prompt-mentions-command ()
+  "The prompt mentions M-x pilish-install-grammars."
+  (let ((pilish--grammar-prompt-done nil)
+        (pilish-grammar-declined-set nil)
+        (noninteractive nil)
+        (prompt-text nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (memq lang '(markdown markdown-inline python))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (prompt) (setq prompt-text prompt) nil))
+              ((symbol-function 'customize-save-variable) #'ignore)
+              ((symbol-function 'message) #'ignore))
+      (pilish--maybe-install-optional-grammars)
+      (should (stringp prompt-text))
+      (should (string-match-p "pilish-install-grammars" prompt-text)))))
+
+;;; Stickiness: Decline persists, new grammars re-prompt
+
+(ert-deftest pilish-test-optional-grammars-decline-suppresses-permanently ()
+  "After declining, same missing set on next startup does NOT re-prompt."
+  (let ((pilish--grammar-prompt-done nil)
+        (pilish-grammar-declined-set nil)
+        (noninteractive nil)
+        (prompt-count 0))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (memq lang '(markdown markdown-inline))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt)
+                 (cl-incf prompt-count)
+                 nil))
+              ((symbol-function 'customize-save-variable)
+               (lambda (var val) (set var val)))
+              ((symbol-function 'message) #'ignore))
+      ;; First session: user declines
+      (pilish--maybe-install-optional-grammars)
+      (should (= prompt-count 1))
+      (should pilish-grammar-declined-set)
+      ;; Simulate Emacs restart: reset session flag, keep persisted set
+      (setq pilish--grammar-prompt-done nil)
+      ;; Second session: same missing grammars — no prompt
+      (pilish--maybe-install-optional-grammars)
+      (should (= prompt-count 1)))))
+
+(ert-deftest pilish-test-optional-grammars-new-grammar-reprompts ()
+  "Adding a new grammar to recipes re-prompts even after a prior decline.
+Simulates: user declined when javascript/rust were missing, then
+a new grammar (e.g., `zig') appears in the missing set."
+  (let ((pilish--grammar-prompt-done nil)
+        ;; Prior decline covered javascript and rust only
+        (pilish-grammar-declined-set '(javascript rust))
+        (noninteractive nil)
+        (prompted nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 ;; javascript, rust, AND go are all missing
+                 (memq lang '(markdown markdown-inline))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt) (setq prompted t) nil))
+              ((symbol-function 'customize-save-variable)
+               (lambda (var val) (set var val)))
+              ((symbol-function 'message) #'ignore))
+      ;; `go' is missing but not in declined-set → re-prompt
+      (pilish--maybe-install-optional-grammars)
+      (should prompted))))
+
+(ert-deftest pilish-test-optional-grammars-accept-does-not-persist ()
+  "Accepting the install offer does not persist a declined set."
+  (let ((pilish--grammar-prompt-done nil)
+        (pilish-grammar-declined-set nil)
+        (noninteractive nil)
+        (customize-called nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (lang &rest _)
+                 (memq lang '(markdown markdown-inline))))
+              ((symbol-function 'y-or-n-p)
+               (lambda (_prompt) t))
+              ((symbol-function 'treesit-install-language-grammar)
+               (lambda (_lang &optional _out-dir) nil))
+              ((symbol-function 'customize-save-variable)
+               (lambda (&rest _) (setq customize-called t)))
+              ((symbol-function 'message) #'ignore))
+      (pilish--maybe-install-optional-grammars)
+      (should-not customize-called)
+      (should-not pilish-grammar-declined-set))))
+
+;;; Install Helper: pilish--install-grammars
+
+(ert-deftest pilish-test-install-grammars-returns-count ()
+  "install-grammars counts the artifacts supplied by its installer."
+  (let* ((dir (make-temp-file "pilish-grammar-count-" t))
+         (user-emacs-directory (file-name-as-directory dir))
+         (treesit-extra-load-path (list dir)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                   ;; File-existence fixture only: never load these artifacts.
+                   (pilish-test--fake-grammar-install dir))
+                  ((symbol-function 'message) #'ignore))
+          (should (= (pilish--install-grammars '(python rust go)) 3))
+          (dolist (lang '(python rust go))
+            (should (equal (pilish--grammar-library-files lang)
+                           (list (expand-file-name
+                                  (pilish--grammar-library-file-name lang) dir))))))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-install-grammars-empty-list ()
+  "install-grammars with empty list returns 0."
+  (should (= (pilish--install-grammars '()) 0)))
+
+(ert-deftest pilish-test-install-grammars-failure-returns-partial-count ()
+  "install-grammars counts only artifacts written before a failure."
+  (let* ((dir (make-temp-file "pilish-grammar-partial-" t))
+         (user-emacs-directory (file-name-as-directory dir))
+         (treesit-extra-load-path (list dir))
+         (warning-text nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                   (lambda (lang &optional out-dir)
+                     (when (eq lang 'rust)
+                       (error "cc: not found"))
+                     (funcall (pilish-test--fake-grammar-install dir)
+                              lang out-dir)))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type msg &rest _) (setq warning-text msg)))
+                  ((symbol-function 'message) #'ignore))
+          ;; Python writes an artifact; Rust fails before writing one.
+          (should (= (pilish--install-grammars '(python rust go)) 1))
+          (should (pilish--grammar-library-files 'python))
+          (should-not (pilish--grammar-library-files 'rust))
+          (should-not (pilish--grammar-library-files 'go))
+          (should (string-match-p "rust" warning-text))
+          (should (string-match-p "1/3" warning-text)))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-install-grammars-names-failing-grammar ()
+  "install-grammars names the failure after two synthetic artifacts."
+  (let* ((dir (make-temp-file "pilish-grammar-failure-" t))
+         (user-emacs-directory (file-name-as-directory dir))
+         (treesit-extra-load-path (list dir))
+         (warning-text nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'treesit-install-language-grammar)
+                   (lambda (lang &optional out-dir)
+                     (when (eq lang 'go)
+                       (error "compilation failed"))
+                     (funcall (pilish-test--fake-grammar-install dir)
+                              lang out-dir)))
+                  ((symbol-function 'display-warning)
+                   (lambda (_type msg &rest _) (setq warning-text msg)))
+                  ((symbol-function 'message) #'ignore))
+          (should (= (pilish--install-grammars '(python rust go)) 2))
+          (should (pilish--grammar-library-files 'python))
+          (should (pilish--grammar-library-files 'rust))
+          (should-not (pilish--grammar-library-files 'go))
+          (should (string-match-p "`go'" warning-text))
+          (should (string-match-p "2/3" warning-text)))
+      (delete-directory dir t))))
+
+;;; Installed Optional Grammars
+
+(ert-deftest pilish-test-installed-optional-grammars ()
+  "installed-optional-grammars returns only grammars that are available."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (lang &rest _)
+               (memq lang '(python rust)))))
+    (let ((installed (pilish--installed-optional-grammars)))
+      (should (memq 'python installed))
+      (should (memq 'rust installed))
+      (should-not (memq 'javascript installed)))))
+
+;;; Interactive Command: M-x pilish-install-grammars
+
+(ert-deftest pilish-test-install-grammars-command-all-installed ()
+  "Interactive command shows message when all grammars are installed."
+  (let ((msg nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (_lang &rest _) t))
+              ((symbol-function 'pilish--markdown-grammar-compatible-p)
+               (lambda () t))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (pilish-install-grammars)
+      (should (string-match-p "installed" msg))
+      (should (string-match-p "✓" msg)))))
+
+(ert-deftest pilish-test-install-grammars-command-shows-status-buffer ()
+  "Interactive command creates status buffer listing missing grammars."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (lang &rest _)
+               (memq lang '(markdown markdown-inline python))))
+            ((symbol-function 'pilish--markdown-grammar-compatible-p)
+             (lambda () t))
+            ((symbol-function 'pop-to-buffer)
+             #'ignore))
+    (unwind-protect
+        (progn
+          (pilish-install-grammars)
+          (let ((buf (get-buffer "*pilish-grammars*")))
+            (should buf)
+            (with-current-buffer buf
+              ;; Has missing grammars listed
+              (should (string-match-p "Missing" (buffer-string)))
+              (should (string-match-p "javascript" (buffer-string)))
+              ;; Has installed grammars listed
+              (should (string-match-p "Installed" (buffer-string)))
+              (should (string-match-p "python" (buffer-string)))
+              ;; Has keybinding hint
+              (should (string-match-p "Press.*i.*to install" (buffer-string)))
+              ;; Is in special-mode (read-only)
+              (should (derived-mode-p 'special-mode)))))
+      (when-let* ((buf (get-buffer "*pilish-grammars*")))
+        (kill-buffer buf)))))
+
+(ert-deftest pilish-test-install-grammars-command-shows-essential-missing ()
+  "Interactive command highlights missing essential grammars prominently."
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (_lang &rest _) nil))
+            ((symbol-function 'pilish--markdown-grammar-compatible-p)
+             (lambda () t))
+            ((symbol-function 'pop-to-buffer)
+             #'ignore))
+    (unwind-protect
+        (progn
+          (pilish-install-grammars)
+          (let ((buf (get-buffer "*pilish-grammars*")))
+            (should buf)
+            (with-current-buffer buf
+              (should (string-match-p "ESSENTIAL" (buffer-string)))
+              (should (string-match-p "markdown" (buffer-string))))))
+      (when-let* ((buf (get-buffer "*pilish-grammars*")))
+        (kill-buffer buf)))))
+
+(ert-deftest pilish-test-install-grammars-command-warns-incompatible-markdown ()
+  "Interactive command warns when an installed Markdown grammar is incompatible."
+  (let ((warning-text nil)
+        (msg nil))
+    (cl-letf (((symbol-function 'treesit-language-available-p)
+               (lambda (_lang &rest _) t))
+              ((symbol-function 'pilish--markdown-grammar-compatible-p)
+               (lambda () nil))
+              ((symbol-function 'display-warning)
+               (lambda (_type msg &rest _) (setq warning-text msg)))
+              ((symbol-function 'message)
+               (lambda (fmt &rest args) (setq msg (apply #'format fmt args)))))
+      (pilish-install-grammars)
+      (should (string-match-p "Incompatible Markdown" warning-text))
+      (should-not msg))))
+
+;;; CI Install Script Smoke Test
+
+(ert-deftest pilish-test-ci-install-script-loads ()
+  "The CI grammar install script loads without error.
+Catches wiring bugs like requiring deleted modules."
+  ;; Just load it — if the requires are broken, this errors.
+  ;; We mock the install loop to avoid actually compiling grammars.
+  (cl-letf (((symbol-function 'treesit-language-available-p)
+             (lambda (_lang &rest _) t))
+            ((symbol-function 'message) #'ignore))
+    ;; Tests run from the project root (Makefile sets load-path to ".")
+    (load (expand-file-name "scripts/install-ts-grammars.el") nil t t)))
+
+;;; check-dependencies
+
+(ert-deftest pilish-test-check-dependencies-calls-grammar-checks ()
+  "check-dependencies invokes grammar install and compatibility checks."
+  (let ((essential-called nil)
+        (compatibility-called nil)
+        (optional-called nil))
+    (cl-letf (((symbol-function 'pilish--check-pi) (lambda (&optional _directory) t))
+              ((symbol-function 'pilish--maybe-install-essential-grammars)
+               (lambda () (setq essential-called t)))
+              ((symbol-function 'pilish--maybe-warn-incompatible-markdown-grammar)
+               (lambda () (setq compatibility-called t)))
+              ((symbol-function 'pilish--maybe-install-optional-grammars)
+               (lambda () (setq optional-called t))))
+      (pilish--check-dependencies)
+      (should essential-called)
+      (should compatibility-called)
+      (should optional-called))))
+
+;;; State response
+
+(ert-deftest pilish-test-session-busy-includes-prompt-start-wait ()
+  "A locally pending prompt keeps the session busy before Pi echoes events."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let ((generation (pilish--begin-prompt-start-wait)))
+      (setq pilish--status 'idle)
+      (should (pilish--prompt-start-current-p generation))
+      (should (pilish--session-busy-p (current-buffer))))))
+
+(ert-deftest pilish-test-session-busy-includes-session-transition ()
+  "An in-flight session switch keeps the session busy."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (setq pilish--status 'idle)
+    (let ((generation (pilish--begin-session-transition 'mock-proc)))
+      (should (pilish--session-transition-active-p (current-buffer)))
+      (should (pilish--session-busy-p (current-buffer)))
+      (pilish--finish-session-transition generation)
+      (should-not (pilish--session-transition-active-p
+                   (current-buffer))))))
+
+(ert-deftest pilish-test-apply-state-response-normalizes-remote-session-file ()
+  "Applying state anchors inbound sessionFile paths in the chat session dir."
+  (let ((chat-buf (generate-new-buffer "*test-state-remote-session-file*")))
+    (unwind-protect
+        (with-current-buffer chat-buf
+          (pilish-chat-mode)
+          (pilish--set-chat-session-identity
+           "/ssh:pi-host:/home/pi/project/")
+          (pilish--apply-state-response
+           chat-buf
+           '(:success t :data (:isStreaming :false
+                               :isCompacting :false
+                               :sessionId "remote-session"
+                               :sessionFile "/home/pi/.pi/sessions/current.jsonl")))
+          (should (equal (plist-get pilish--state :session-file)
+                         "/ssh:pi-host:/home/pi/.pi/sessions/current.jsonl")))
+      (kill-buffer chat-buf))))
+
+(ert-deftest pilish-test-apply-state-response-ignores-nul-session-file ()
+  "Applying state does not store unsafe sessionFile as a navigable path."
+  (let ((chat-buf (generate-new-buffer "*test-state-nul-session-file*")))
+    (unwind-protect
+        (with-current-buffer chat-buf
+          (pilish-chat-mode)
+          (let ((bad (concat "/tmp/a" (string ?\0) "b.jsonl")))
+            (pilish--apply-state-response
+             chat-buf
+             (list :success t
+                   :data (list :isStreaming :false
+                               :isCompacting :false
+                               :sessionId "nul-session"
+                               :sessionFile bad)))
+            (should (equal (plist-get pilish--state :session-id)
+                           "nul-session"))
+            (should-not (plist-get pilish--state :session-file))))
+      (kill-buffer chat-buf))))
+
+(ert-deftest pilish-test-rereview-snapshot-initializes-idle-ui ()
+  "Without an event-owned busy phase, UI initialization adopts remote status."
+  (dolist (snapshot '((:false :false idle) (t :false streaming)
+                      (:false t compacting) (t t streaming)))
+    (with-temp-buffer
+      (pilish-chat-mode)
+      (should (eq pilish--status 'idle))
+      (pilish--apply-state-response
+       (current-buffer)
+       (list :success t :data (list :isStreaming (car snapshot)
+                                   :isCompacting (cadr snapshot)
+                                   :thinkingLevel "high")))
+      (should (equal (plist-get pilish--state :thinking-level) "high"))
+      (should (eq pilish--status (nth 2 snapshot)))
+      (should (eq (plist-get pilish--state :status) (nth 2 snapshot))))))
+
+(ert-deftest pilish-test-rereview-snapshot-preserves-post-run-ownership ()
+  "Core/UI refreshes cannot invent agent_start during post-run work or compaction.
+Pi's isStreaming includes post-run processing, not just the low-level loop."
+  (dolist (path '(core ui))
+    (dolist (compaction '(nil t))
+      (ert-info ((format "%s refresh; post-run compaction %s" path compaction))
+        (pilish-test-with-rpc-session (chat _input proc commands)
+          (with-current-buffer chat
+            (cl-letf (((symbol-function 'message) #'ignore))
+              (pilish--handle-display-event '(:type "agent_start"))
+              (pilish--handle-display-event '(:type "agent_end" :messages []))
+              (when compaction
+                (pilish--handle-display-event
+                 '(:type "compaction_start" :reason "threshold")))
+              (setq pilish--followup-queue '("next"))
+              (if (eq path 'ui)
+                  (pilish--refresh-thinking-level-state proc chat)
+                (pilish--rpc-async
+                 proc '(:type "get_state")
+                 (lambda (response)
+                   (with-current-buffer chat
+                     (pilish--update-state-from-response response)))))
+              (pilish--dispatch-response
+               proc (list :type "response" :id (plist-get (car commands) :id)
+                          :command "get_state" :success t
+                          :data (list :isStreaming t
+                                      :isCompacting (if compaction t :false)
+                                      :thinkingLevel "high")))
+              (should (equal (plist-get pilish--state :thinking-level) "high"))
+              (should (eq pilish--status (if compaction 'compacting 'sending)))
+              (should (eq (plist-get pilish--state :status) pilish--status))
+              (when compaction
+                (should (eq pilish--pre-compaction-status 'sending))
+                (pilish--handle-display-event
+                 '(:type "compaction_end" :reason "threshold"
+                   :aborted :false :willRetry :false
+                   :result (:summary "Done" :tokensBefore 1000))))
+              (should (eq pilish--status 'sending))
+              (should (= 1 (length commands)))
+              (pilish--handle-display-event '(:type "agent_settled"))
+              (should (= 2 (length commands)))
+              (should (equal (plist-get (car commands) :type) "prompt"))
+              (should (equal (plist-get (car commands) :message) "next")))))))))
+
+(ert-deftest pilish-test-apply-state-response-keeps-local-prompt-start-busy ()
+  "Stale idle get_state must not erase local prompt preflight state."
+  (let ((chat-buf (generate-new-buffer "*test-state-local-prompt-start*")))
+    (unwind-protect
+        (with-current-buffer chat-buf
+          (pilish-chat-mode)
+          (let ((generation (pilish--begin-prompt-start-wait)))
+            (setq pilish--status 'sending
+                  pilish--state '(:session-id "same-session"))
+            (pilish--apply-state-response
+             chat-buf
+             '(:success t :data (:isStreaming :false
+                                 :isCompacting :false
+                                 :sessionId "same-session"
+                                 :sessionFile "/tmp/same.jsonl")))
+            (should (pilish--prompt-start-current-p generation))
+            (should (eq pilish--status 'sending))
+            (should (eq (plist-get pilish--state :status) 'sending))
+            (should (pilish--session-busy-p chat-buf))))
+      (kill-buffer chat-buf))))
+
+(ert-deftest pilish-test-apply-state-response-preserves-extension-ui-warnings-without-session-change ()
+  "Applying state keeps unsupported UI warnings within the same pi session."
+  (let ((chat-buf (generate-new-buffer "*test-state-same-session*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer chat-buf
+            (pilish-chat-mode)
+            (setq pilish--state nil
+                  pilish--unsupported-extension-ui-methods-warned
+                  '("setWidget")))
+          (pilish--apply-state-response
+           chat-buf
+           '(:success t :data (:isStreaming :false
+                               :sessionId "new-session"
+                               :sessionFile "/tmp/new.jsonl")))
+          (with-current-buffer chat-buf
+            (should (equal pilish--unsupported-extension-ui-methods-warned
+                           '("setWidget"))))
+          (with-current-buffer chat-buf
+            (setq pilish--unsupported-extension-ui-methods-warned
+                  '("setWidget")))
+          (pilish--apply-state-response
+           chat-buf
+           '(:success t :data (:isStreaming :false
+                               :sessionId "new-session"
+                               :sessionFile "/tmp/newer.jsonl")))
+          (with-current-buffer chat-buf
+            (should (equal pilish--unsupported-extension-ui-methods-warned
+                           '("setWidget")))))
+      (kill-buffer chat-buf))))
+
+(ert-deftest pilish-test-apply-state-response-resets-extension-ui-warnings-on-session-change ()
+  "Applying state clears unsupported UI warnings when the pi session changes."
+  (let ((chat-buf (generate-new-buffer "*test-state-session-change*")))
+    (unwind-protect
+        (progn
+          (with-current-buffer chat-buf
+            (pilish-chat-mode)
+            (setq pilish--state '(:session-id "old-session")
+                  pilish--unsupported-extension-ui-methods-warned
+                  '("setWidget")))
+          (pilish--apply-state-response
+           chat-buf
+           '(:success t :data (:isStreaming :false
+                               :sessionId "new-session"
+                               :sessionFile "/tmp/new.jsonl")))
+          (with-current-buffer chat-buf
+            (should (equal (plist-get pilish--state :session-id)
+                           "new-session"))
+            (should (null pilish--unsupported-extension-ui-methods-warned))))
+      (kill-buffer chat-buf))))
+
+;;; Input Window Height (integer and float ratio)
+
+(ert-deftest pilish-test-input-height-integer-returns-configured-value ()
+  "Integer setting returns that many lines when window is large enough."
+  (let ((pilish-input-window-height 10)
+        (window-min-height 4))
+    (should (= (pilish--input-height-for-window-height 40) 10))))
+
+(ert-deftest pilish-test-input-height-integer-clamps-to-max ()
+  "Integer setting clamps when window is too small."
+  (let ((pilish-input-window-height 10)
+        (window-min-height 4))
+    (should (= (pilish--input-height-for-window-height 12) 8))))
+
+(ert-deftest pilish-test-input-height-float-computes-ratio ()
+  "Float setting computes height as fraction of total."
+  (let ((pilish-input-window-height 0.3)
+        (window-min-height 4))
+    (should (= (pilish--input-height-for-window-height 40) 12))))
+
+(ert-deftest pilish-test-input-height-float-clamps-to-min ()
+  "Float setting clamps up to window-min-height for tiny ratios."
+  (let ((pilish-input-window-height 0.05)
+        (window-min-height 4))
+    (should (= (pilish--input-height-for-window-height 40) 4))))
+
+(ert-deftest pilish-test-input-height-float-clamps-to-max ()
+  "Float setting clamps down to preserve chat min-height."
+  (let ((pilish-input-window-height 0.9)
+        (window-min-height 4))
+    (should (= (pilish--input-height-for-window-height 40) 36))))
+
+(ert-deftest pilish-test-input-height-float-small-window ()
+  "Float ratio on a small total still respects min heights."
+  (let ((pilish-input-window-height 0.3)
+        (window-min-height 4))
+    (should (= (pilish--input-height-for-window-height 10) 4))))
+
+;;; Dynamic ratio rebalancing
+
+(defmacro pilish-test-with-split-layout (&rest body)
+  "Execute BODY with a chat/input window pair.
+Binds `chat-win' and `input-win' for use in BODY."
+  (declare (indent 0) (debug t))
+  `(with-temp-buffer
+     (pilish-chat-mode)
+     (let ((input-buf (generate-new-buffer " *test-input*")))
+       (unwind-protect
+           (progn
+             (setq-local pilish--input-buffer input-buf)
+             (delete-other-windows)
+             (switch-to-buffer (current-buffer))
+             (let* ((input-win (split-window nil -10 'below))
+                    (chat-win (selected-window)))
+               (set-window-buffer input-win input-buf)
+               ,@body))
+         (when (buffer-live-p input-buf)
+           (kill-buffer input-buf))))))
+
+(ert-deftest pilish-test-rebalance-adjusts-float-ratio ()
+  "Rebalance resizes input window to match float ratio."
+  (let ((pilish-input-window-height 0.3))
+    (pilish-test-with-split-layout
+      (pilish--rebalance-input-window chat-win input-win)
+      (let* ((total (+ (window-total-height chat-win)
+                       (window-total-height input-win)))
+             (expected (pilish--input-height-for-window-height total)))
+        (should (= (window-total-height input-win) expected))))))
+
+(ert-deftest pilish-test-rebalance-skips-integer-height ()
+  "Rebalance is a no-op when height is an integer."
+  (let ((pilish-input-window-height 10))
+    (pilish-test-with-split-layout
+      (let ((before (window-total-height input-win)))
+        (pilish--rebalance-input-window chat-win input-win)
+        (should (= (window-total-height input-win) before))))))
+
+(ert-deftest pilish-test-rebalance-leaves-right-side-input-alone ()
+  "Neither direct resizing nor the frame hook changes a custom side pair."
+  (save-window-excursion
+    (pilish-test-with-split-layout
+      (delete-window input-win)
+      (let* ((pilish-split-input-window-function
+              (lambda (chat input)
+                (let ((window (split-window chat nil 'right)))
+                  (set-window-buffer window input)
+                  window)))
+             (side (pilish-split-input-window chat-win input-buf))
+             (before (mapcar #'window-edges (list chat-win side))))
+        (dolist (pilish-input-window-height '(0.25 fit 10))
+          (pilish--rebalance-input-window chat-win side)
+          (pilish--maybe-rebalance-windows (selected-frame))
+          (should (equal before (mapcar #'window-edges (list chat-win side)))))))))
+
+(ert-deftest pilish-test-rebalance-mixed-layouts-keeps-ordinary-ratio ()
+  "A custom side pair cannot change another session's ordinary ratio."
+  (let ((pilish-input-window-height 0.25)
+        (window-min-height 4))
+    (save-window-excursion
+      (pilish-test-with-split-layout
+        (let ((chat-b (generate-new-buffer " *test-chat-B*"))
+              (input-b (generate-new-buffer " *test-input-B*")))
+          (unwind-protect
+              (let* ((column (split-window chat-win nil 'right))
+                     (side (split-window column nil 'right)))
+                (with-current-buffer chat-b
+                  (pilish-chat-mode)
+                  (pilish--set-input-buffer input-b))
+                (set-window-buffer column chat-b)
+                (set-window-buffer side input-b)
+                (pilish--rebalance-input-window chat-win input-win)
+                (let ((before (mapcar #'window-edges (list column side))))
+                  (pilish--maybe-rebalance-windows (selected-frame))
+                  (should (= (window-total-height input-win)
+                             (pilish--input-height-for-window-height
+                              (+ (window-total-height chat-win)
+                                 (window-total-height input-win)))))
+                  (should (equal before (mapcar #'window-edges (list column side))))))
+            (kill-buffer input-b)
+            (kill-buffer chat-b)))))))
+
+(ert-deftest pilish-test-rebalance-discovers-pairs-on-hook-frame ()
+  "Only pairs returned for the hook's frame have their geometry changed."
+  (let ((pilish-input-window-height 0.25)
+        (window-min-height 4))
+    (save-window-excursion
+      (pilish-test-with-split-layout
+        (delete-window input-win)
+        (let* ((other-chat (split-window chat-win nil 'right))
+               (other-input (split-window other-chat -8 'below))
+               (input-win (split-window chat-win -8 'below))
+               (before (mapcar #'window-edges (list other-chat other-input)))
+               (frame 'resized-frame))
+          (set-window-buffer input-win input-buf)
+          (cl-letf (((symbol-function 'window-list)
+                     (lambda (requested &optional minibuffer _window)
+                       (should (eq requested frame))
+                       (should (eq minibuffer 'no-mini))
+                       (list chat-win input-win))))
+            (pilish--maybe-rebalance-windows frame))
+          (should (= (window-total-height input-win)
+                     (pilish--input-height-for-window-height
+                      (+ (window-total-height chat-win)
+                         (window-total-height input-win)))))
+          (should (equal before (mapcar #'window-edges (list other-chat other-input)))))))))
+
+(ert-deftest pilish-test-chat-mode-adds-size-change-hook ()
+  "Chat mode installs the window-size-change rebalance hook."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (should (memq #'pilish--maybe-rebalance-windows
+                  (default-value 'window-size-change-functions)))))
+
+;;; Input window fitted to the draft
+
+(defmacro pilish-test-with-fit-layout (input-mode &rest body)
+  "Execute BODY with a linked chat/input pair and a `fit' input height.
+With INPUT-MODE non-nil, the input buffer uses `pilish-input-mode'.
+Binds `chat-win', `input-win' and `input-buf' for use in BODY."
+  (declare (indent 1) (debug t))
+  `(let ((pilish-input-window-height 'fit)
+         (pilish-input-window-max-height 0.3)
+         (input-mode ,input-mode))
+     (pilish-test-with-split-layout
+       (let ((chat-buf (current-buffer)))
+         (with-current-buffer input-buf
+           (when input-mode
+             (pilish-input-mode))
+           (setq-local pilish--chat-buffer chat-buf)))
+       ,@body)))
+
+(defun pilish-test--fit-chrome (window)
+  "Return WINDOW's header and mode line rows."
+  (- (window-total-height window) (window-body-height window)))
+
+(defun pilish-test--set-draft (buffer text)
+  "Replace BUFFER's draft with TEXT."
+  (with-current-buffer buffer
+    (erase-buffer)
+    (insert text)))
+
+(ert-deftest pilish-test-input-height-fit-splits-at-min-height ()
+  "A `fit' input window is split at `window-min-height' before fitting."
+  (let ((pilish-input-window-height 'fit)
+        (window-min-height 4))
+    (should (= (pilish--input-height-for-window-height 40) 4))))
+
+(ert-deftest pilish-test-fit-input-grows-and-shrinks-with-draft ()
+  "The input window shows one line when empty and every line of a draft."
+  (pilish-test-with-fit-layout nil
+    (let ((chrome (pilish-test--fit-chrome input-win)))
+      (pilish-fit-input-window input-win)
+      (should (= (window-total-height input-win) (1+ chrome)))
+      (pilish-test--set-draft input-buf "one\ntwo\nthree")
+      (pilish-fit-input-window input-win)
+      (should (= (window-body-height input-win) 3))
+      ;; A trailing newline puts point on a line of its own.
+      (pilish-test--set-draft input-buf "one\ntwo\nthree\n")
+      (pilish-fit-input-window input-win)
+      (should (= (window-body-height input-win) 4))
+      (pilish-test--set-draft input-buf "")
+      (pilish-fit-input-window input-win)
+      (should (= (window-total-height input-win) (1+ chrome))))))
+
+(ert-deftest pilish-test-fit-input-counts-wrapped-lines ()
+  "A long draft line counts each screen line it wraps to."
+  (pilish-test-with-fit-layout nil
+    (with-current-buffer input-buf (setq truncate-lines nil))
+    (pilish-test--set-draft
+     input-buf (make-string (* 2 (window-body-width input-win)) ?x))
+    (pilish-fit-input-window input-win)
+    (should (= (window-body-height input-win) 3))))
+
+(ert-deftest pilish-test-fit-input-stops-at-max-height ()
+  "A draft taller than the cap scrolls within the capped window."
+  (pilish-test-with-fit-layout nil
+    (let ((total (+ (window-total-height chat-win)
+                    (window-total-height input-win))))
+      (pilish-test--set-draft input-buf (make-string 200 ?\n))
+      (set-window-point input-win (with-current-buffer input-buf (point-max)))
+      (set-window-start input-win (with-current-buffer input-buf (- (point-max) 3)))
+      (pilish-fit-input-window input-win)
+      (should (= (window-total-height input-win) (round (* 0.3 total))))
+      ;; An overflowing draft keeps its scroll position.
+      (should (= (window-start input-win)
+                 (with-current-buffer input-buf (- (point-max) 3))))
+      (let ((pilish-input-window-max-height 5))
+        (pilish-fit-input-window input-win)
+        (should (= (window-total-height input-win) 5))))))
+
+(ert-deftest pilish-test-fit-input-shows-draft-top-after-growing ()
+  "Growing to fit the whole draft scrolls back to its first line."
+  (pilish-test-with-fit-layout nil
+    (pilish-test--set-draft input-buf "one\ntwo\nthree")
+    (set-window-point input-win (with-current-buffer input-buf (point-max)))
+    (set-window-start input-win
+                      (with-current-buffer input-buf
+                        (save-excursion (goto-char (point-max))
+                                        (line-beginning-position))))
+    (pilish-fit-input-window input-win)
+    (should (= (window-start input-win) 1))))
+
+(ert-deftest pilish-test-fit-input-moves-preserved-size ()
+  "A preserved input height follows the fitted height."
+  (pilish-test-with-fit-layout nil
+    (window-preserve-size input-win nil t)
+    (pilish-test--set-draft input-buf "one\ntwo\nthree\nfour")
+    (pilish-fit-input-window input-win)
+    (should (= (window-body-height input-win) 4))
+    (should (= (nth 2 (window-parameter input-win 'window-preserved-size))
+               (window-body-height input-win)))))
+
+(ert-deftest pilish-test-fit-input-ignores-other-settings-and-layouts ()
+  "Fitting leaves integer heights and inputs not below their chat alone."
+  (pilish-test-with-fit-layout nil
+    (pilish-test--set-draft input-buf "one\ntwo\nthree")
+    (let ((before (window-total-height input-win)))
+      (let ((pilish-input-window-height 10))
+        (pilish-fit-input-window input-win))
+      (should (= (window-total-height input-win) before))
+      (with-current-buffer input-buf (setq-local pilish--chat-buffer nil))
+      (pilish-fit-input-window input-win)
+      (should (= (window-total-height input-win) before)))))
+
+(ert-deftest pilish-test-fit-input-reopened-window-fits-draft ()
+  "An input window reopened below its chat, as on demand, fits its draft."
+  (pilish-test-with-fit-layout nil
+    (pilish-test--set-draft input-buf "one\ntwo")
+    (delete-window input-win)
+    (let ((reopened (pilish--split-input-below-chat (current-buffer) input-buf)))
+      (should (eq (window-buffer reopened) input-buf))
+      (should (= (window-body-height reopened) 2)))))
+
+(ert-deftest pilish-test-fit-input-resize-refits-only-changed-geometry ()
+  "Size changes refit only when the width or the pair height changed."
+  (pilish-test-with-fit-layout t
+    (pilish-fit-input-window input-win)
+    (let ((fitted (window-total-height input-win)))
+      ;; The fit's own resize leaves the geometry unchanged.
+      (pilish-test--set-draft input-buf "one\ntwo\nthree")
+      (pilish--maybe-rebalance-windows (selected-frame))
+      (should (= (window-total-height input-win) fitted))
+        (set-window-parameter input-win 'pilish--fit-geometry '(1 . 1))
+      (pilish--maybe-rebalance-windows (selected-frame))
+      (should (= (window-body-height input-win) 3)))))
+
+(ert-deftest pilish-test-fit-input-edits-schedule-one-fit ()
+  "Edits in an input buffer schedule a single fit of its windows."
+  (pilish-test-with-fit-layout t
+    (with-current-buffer input-buf
+      (should (memq #'pilish--schedule-fit-input-windows
+                    after-change-functions))
+      (insert "one\n")
+      (let ((timer pilish--fit-input-timer))
+        (should (timerp timer))
+        (insert "two\nthree")
+        (should (eq pilish--fit-input-timer timer))
+        (timer-event-handler timer)
+        (should-not pilish--fit-input-timer)))
+    (should (= (window-body-height input-win) 3))))
+
+(ert-deftest pilish-test-repeating-timer-observation-uses-real-scheduling-and-cleanup ()
+  "Observe both scheduling APIs once, retain cancelled allocations, and unwind."
+  (let ((unrelated (run-at-time 3600 3600 #'ignore))
+        first second once captured scheduled)
+    (unwind-protect
+        (progn
+          (should-error
+           (pilish-test-with-repeating-timer-allocations timers
+             (setq first (run-at-time 3600 3600 #'ignore)
+                   second (run-with-timer 3600 3600 #'ignore)
+                   once (run-with-timer 3600 nil #'ignore)
+                   scheduled (cl-every (lambda (timer) (memq timer timer-list))
+                                       (list first second once)))
+             (cancel-timer first)
+             (setq captured timers)
+             (ert-fail "Deliberate fixture failure"))
+           :type 'ert-test-failed)
+          (should scheduled)
+          (should (equal captured (list second first)))
+          (should-not (memq first timer-list))
+          (should-not (memq second timer-list))
+          (should (memq once timer-list))
+          (should (memq unrelated timer-list)))
+      (dolist (timer (list first second once unrelated))
+        (when (timerp timer) (cancel-timer timer))))))
+
+;;; Active-session stdout silence, in the existing input status only
+
+(ert-deftest pilish-test-inactivity-header-threshold-phase-face-and-help ()
+  "At the exact threshold only the existing status slot changes."
+  (dolist (case '(((:type "agent_start") "thinking")
+                  ((:type "tool_execution_start" :toolName "bash"
+                          :toolCallId "quiet-tool" :args (:command "sleep 600"))
+                   "running")
+                  ((:type "compaction_start" :reason "manual") "compact")))
+    (pilish-test-with-clock now
+      (pilish-test-with-rpc-session (chat input proc commands)
+        ;; Do not mask the real default with the adopted-session fixture.
+        (should (= pilish-session-inactivity-timeout 300))
+        (let (notices)
+          (pilish-test--adopt-rpc-process chat proc)
+          (cl-letf (((symbol-function 'message)
+                     (lambda (format-string &rest args)
+                       (push (apply #'format format-string args) notices))))
+            (pilish-test--stdout proc '(:type "agent_start") (car case)))
+          (with-current-buffer chat
+            (setq pilish--session-name "Kept session"
+                  pilish--followup-queue '("do not submit")
+                  pilish--extension-status '(("extension" . "kept status"))))
+          (let* ((phase (cadr case))
+                 (normal (with-current-buffer input (pilish--header-line-string)))
+                 (chat-text (with-current-buffer chat (buffer-string)))
+                 (input-text (with-current-buffer input (buffer-string)))
+                 (status (buffer-local-value 'pilish--status chat))
+                 (state (copy-tree (buffer-local-value 'pilish--state chat)))
+                 (window (selected-window)))
+            (should (eq 'pilish-activity-phase
+                        (get-text-property (string-match phase normal) 'face normal)))
+            (setq notices nil commands nil now 1299.999)
+            (should (equal-including-properties
+                     normal (with-current-buffer input (pilish--header-line-string))))
+            (setq now 1300.0)
+            (cl-letf (((symbol-function 'message)
+                       (lambda (&rest args) (push args notices)))
+                      ((symbol-function 'display-warning)
+                       (lambda (&rest args) (push args notices))))
+              (let* ((header (with-current-buffer input (pilish--header-line-string)))
+                     (warning-text (concat phase " (no output 5m)"))
+                     (start (string-match (regexp-quote warning-text) header)))
+                (should start)
+                (should (equal (substring-no-properties header)
+                               (string-replace (format "%-8s" phase) warning-text
+                                               (substring-no-properties normal))))
+                (should (eq (get-text-property start 'face header) 'warning))
+                (let ((help (get-text-property start 'help-echo header)))
+                  (should (string-match-p "Pi may still be working" help))
+                  (should (string-match-p "M-x pilish-abort" help))
+                  (should (string-match-p "normally C-c C-k" help))
+                  (should (string-match-p "return queued messages to the draft" help)))
+                ;; Redisplay must be pure, not start another observer.
+                (let ((scheduled (copy-sequence timer-list)))
+                  (dotimes (_ 3)
+                    (with-current-buffer input (pilish--header-line-string)))
+                  (should (equal scheduled timer-list)))))
+            (should-not notices)
+            (should-not commands)
+            (should (eq status (buffer-local-value 'pilish--status chat)))
+            (should (equal state (buffer-local-value 'pilish--state chat)))
+            (should (equal phase (buffer-local-value 'pilish--activity-phase chat)))
+            (should (equal '("do not submit")
+                           (buffer-local-value 'pilish--followup-queue chat)))
+            (should-not (buffer-local-value 'pilish--aborted chat))
+            (should (equal chat-text (with-current-buffer chat (buffer-string))))
+            (should (equal input-text (with-current-buffer input (buffer-string))))
+            (should (eq window (selected-window)))))))))
+
+(ert-deftest pilish-test-inactivity-live-timeout-policy-retains-output-age ()
+  "Disable, reenable and threshold edits use the same factual output age."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (setq pilish-session-inactivity-timeout 20)
+    (pilish-test--stdout proc '(:type "agent_start"))
+    (let ((normal (pilish-test--input-header input)))
+      (setq now 1020.0)
+      (pilish-test--assert-inactivity input "thinking (no output 20s)")
+      (setq pilish-session-inactivity-timeout nil)
+      (should (equal normal (pilish-test--input-header input)))
+      (let ((timer (buffer-local-value 'pilish--inactivity-timer chat)))
+        (pilish-test--fire-timer timer)
+        (should (memq timer timer-list)))
+      (setq now 1070.0 pilish-session-inactivity-timeout 20)
+      (pilish-test--assert-inactivity input "thinking (no output 1m)")
+      (setq pilish-session-inactivity-timeout 100)
+      (should (equal normal (pilish-test--input-header input)))
+      (setq pilish-session-inactivity-timeout 60)
+      (pilish-test--assert-inactivity input "thinking (no output 1m)"))))
+
+(ert-deftest pilish-test-inactivity-refresh-is-active-only-and-not-a-stats-poll ()
+  "Initial and repeating real ticks refresh only the session pair.
+Both the chat and input buffer repaint, because either may own the
+header line under `pilish-header-line-location'.  No stats or other
+work happens on a tick."
+  (pilish-test-with-rpc-session (chat input proc commands)
+    (let ((pilish-session-inactivity-timeout 0.02) observer refreshed notices)
+      (unwind-protect
+          (progn
+            (pilish-test--adopt-rpc-process chat proc)
+            (should-not (buffer-local-value 'pilish--inactivity-timer chat))
+            (pilish-test--stdout proc '(:type "agent_start"))
+            (setq observer (buffer-local-value 'pilish--inactivity-timer chat))
+            (should (memq observer timer-list))
+            (with-current-buffer chat (setq pilish--followup-queue '("wait")))
+            (let ((last (process-get proc 'pilish-last-output-time))
+                  (state (copy-tree (buffer-local-value 'pilish--state chat))))
+              (cl-letf (((symbol-function 'force-mode-line-update)
+                         (lambda (&optional all)
+                           (push (list (current-buffer) all
+                                       (when (memq (current-buffer) (list chat input))
+                                         (pilish--header-line-string)))
+                                 refreshed)))
+                        ((symbol-function 'pilish--refresh-header)
+                         (lambda () (ert-fail "Watchdog attempted stats refresh")))
+                        ((symbol-function 'message)
+                         (lambda (&rest args) (push args notices))))
+                ;; No manual delivery or formatter reads in the wait predicate.
+                (with-temp-buffer
+                  (should (pilish-test-wait-until
+                           (lambda () (>= (length refreshed) 2)) 10 0.05))))
+              (dolist (sample refreshed)
+                (ert-info ((format "autonomous refresh=%S" sample))
+                  (should (memq (car sample) (list chat input)))
+                  (should-not (cadr sample))
+                  (let* ((header (nth 2 sample))
+                         (start (string-match "thinking (no output" header)))
+                    (should start)
+                    (should (eq 'warning (get-text-property start 'face header))))))
+              (ert-info ((format "refreshed buffers=%S" (mapcar #'car refreshed)))
+                (should (memq chat (mapcar #'car refreshed)))
+                (should (memq input (mapcar #'car refreshed))))
+              (should (equal last (process-get proc 'pilish-last-output-time)))
+              (should (equal state (buffer-local-value 'pilish--state chat))))
+            (should-not notices)
+            (should-not commands)
+            (should (eq 'streaming (buffer-local-value 'pilish--status chat)))
+            (should (equal '("wait") (buffer-local-value 'pilish--followup-queue chat)))
+            (pilish-test--stdout proc '(:type "agent_end" :messages []))
+            (should-not (memq observer timer-list))
+            (should-not (buffer-local-value 'pilish--inactivity-timer chat))
+            (should (eq 'sending (buffer-local-value 'pilish--status chat)))
+            (pilish-test--assert-inactivity input nil)
+            ;; Do not drain the deliberately held followup in fixture teardown.
+            (with-current-buffer chat (setq pilish--followup-queue nil))
+            (pilish-test--stdout proc '(:type "agent_settled"))
+            (should (eq 'idle (buffer-local-value 'pilish--status chat)))
+            (should-not (buffer-local-value 'pilish--inactivity-timer chat)))
+        (when observer (cancel-timer observer))))))
+
+(ert-deftest pilish-test-inactivity-startup-state-response-arms-without-agent-event ()
+  "An accepted get_state can initialize busy observation, not settle it."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (pilish-test-with-repeating-timer-allocations allocated
+      (pilish--rpc-async proc '(:type "get_state")
+                         (lambda (response)
+                           (pilish--apply-state-response chat response)))
+      (setq now 2000.0)
+      (pilish-test--stdout
+       proc `(:type "response" :id ,(plist-get (car commands) :id)
+                    :success t :data (:isStreaming t :isCompacting :false)))
+      (should (equal allocated
+                     (list (buffer-local-value 'pilish--inactivity-timer chat))))
+      (should (eq 'streaming (buffer-local-value 'pilish--status chat)))
+      (setq now 2300.0)
+      (pilish-test--fire-timer (buffer-local-value 'pilish--inactivity-timer chat))
+      (pilish-test--assert-inactivity input "no output 5m")
+      (pilish--apply-state-response
+       chat '(:success t :data (:isStreaming :false :isCompacting :false)))
+      (should (eq 'streaming (buffer-local-value 'pilish--status chat)))
+      (should (memq (buffer-local-value 'pilish--inactivity-timer chat) timer-list))
+      (should (equal allocated
+                     (list (buffer-local-value 'pilish--inactivity-timer chat)))))))
+
+(ert-deftest pilish-test-inactivity-compacting-state-response-preserves-json-literals ()
+  "Framed false/null literals initialize compaction, not a phantom stream."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (pilish-test-with-repeating-timer-allocations allocated
+      (let ((phase (buffer-local-value 'pilish--activity-phase chat)))
+        (pilish--rpc-async proc '(:type "get_state")
+                           (lambda (response)
+                             (pilish--apply-state-response chat response)))
+        (setq now 2000.0)
+        (pilish-test--stdout
+         proc `(:type "response" :id ,(plist-get (car commands) :id)
+                      :success t :data (:isStreaming :false :isCompacting t
+                                                     :sessionFile :null)))
+        (should (eq 'compacting (buffer-local-value 'pilish--status chat)))
+        (should-not (plist-get (buffer-local-value 'pilish--state chat) :session-file))
+        (should (= 0 (hash-table-count (pilish--get-pending-requests proc))))
+        ;; State snapshots preserve the existing phase, even when it is idle.
+        (should (equal phase (buffer-local-value 'pilish--activity-phase chat)))
+        (pilish-test--assert-inactivity input nil)
+        (setq now 2300.0)
+        (pilish-test--fire-timer (buffer-local-value 'pilish--inactivity-timer chat))
+        (pilish-test--assert-inactivity input (concat phase " (no output 5m)"))
+        (should (eq 'compacting (buffer-local-value 'pilish--status chat)))
+        (should (= 1 (length commands)))
+        (should (memq (buffer-local-value 'pilish--inactivity-timer chat) timer-list))
+        (should (equal allocated
+                       (list (buffer-local-value 'pilish--inactivity-timer chat))))))))
+
+(ert-deftest pilish-test-inactivity-two-sessions-and-candidate-output-isolation ()
+  "Traffic and candidate display routing cannot borrow another owner's timer."
+  (pilish-test-with-inactivity-session (a ai ap ac now)
+    (pilish-test-with-rpc-session (b bi bp bc)
+      (pilish-test--adopt-rpc-process b bp)
+      (pilish-test--stdout ap '(:type "agent_start"))
+      (pilish-test--stdout bp '(:type "agent_start"))
+      (setq now 1300.0)
+      (pilish--process-filter bp " \n")
+      (pilish-test--assert-inactivity ai "thinking (no output 5m)")
+      (pilish-test--assert-inactivity bi nil)
+      ;; Match the baseline reload candidate route.  Ordinary events still
+      ;; render there; the observer must independently guard its source.
+      (pilish-test--stdout ap '(:type "agent_end" :messages []))
+      (let ((observer (buffer-local-value 'pilish--inactivity-timer b)))
+        (process-put bp 'pilish-chat-buffer a)
+        (pilish-test--stdout bp '(:type "agent_start"))
+        (should-not (buffer-local-value 'pilish--inactivity-timer a))
+        (should (eq observer (buffer-local-value 'pilish--inactivity-timer b)))
+        (should (memq observer timer-list)))
+      (process-put bp 'pilish-chat-buffer b))))
+
+(ert-deftest pilish-test-inactivity-replacement-and-stale-callback-ownership ()
+  "Replacement seeds a fresh clock; stale work may cancel only itself."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (let ((next (start-process "pilish-replacement" nil "cat")))
+      (unwind-protect
+          (progn
+            (pilish-test--stdout proc '(:type "agent_start"))
+            (let ((old (buffer-local-value 'pilish--inactivity-timer chat)) refreshed)
+              (should (memq old timer-list))
+              (pilish--process-filter next "candidate output before adoption\n")
+              (setq now 1400.0)
+              (with-current-buffer chat (pilish--set-process next))
+              (process-put next 'pilish-chat-buffer chat)
+              (pilish--register-display-handler next)
+              (should-not (memq old timer-list))
+              (pilish-test--assert-inactivity input nil)
+              (let ((current (buffer-local-value 'pilish--inactivity-timer chat))
+                    (state (copy-tree (buffer-local-value 'pilish--state chat))))
+                (should-not (eq current old))
+                ;; Backdate only after subr-mock setup, which may compile/yield.
+                (cl-letf (((symbol-function 'force-mode-line-update)
+                           (lambda (&rest _) (push (current-buffer) refreshed))))
+                  (setq now 1300.0 refreshed nil)
+                  (pilish-test--fire-timer old)
+                  (should-not refreshed)
+                  (setq now 1700.0))
+                (should (memq current timer-list))
+                (should (eq current (buffer-local-value 'pilish--inactivity-timer chat)))
+                (should (equal 1400.0 (process-get next 'pilish-last-output-time)))
+                (should (equal state (buffer-local-value 'pilish--state chat)))
+                (should (eq 'streaming (buffer-local-value 'pilish--status chat)))
+                (pilish--process-filter proc "late old stdout\n")
+                (pilish-test--assert-inactivity input "thinking (no output 5m)")
+                ;; Idempotent same-process assignment is not adoption.
+                (with-current-buffer chat (pilish--set-process next))
+                (pilish-test--fire-timer current)
+                (pilish-test--assert-inactivity input "thinking (no output 5m)")
+                (should (memq current timer-list)))))
+        (when (process-live-p next) (delete-process next))))))
+
+(ert-deftest pilish-test-inactivity-exit-and-buffer-kill-cancel-owned-timer ()
+  "Exit, chat kill and input kill cancel rather than just orphan callbacks."
+  (dolist (how '(exit chat input))
+    (ert-info ((format "teardown=%S" how))
+      (pilish-test-with-inactivity-session (chat input proc commands now)
+        (pilish-test--stdout proc '(:type "agent_start"))
+        (let ((timer (buffer-local-value 'pilish--inactivity-timer chat)) refreshed)
+          (should (memq timer timer-list))
+          (pcase how
+            ('exit
+             (delete-process proc)
+             (pilish--process-sentinel proc "finished\n")
+             (should-not (buffer-local-value 'pilish--process chat))
+             (should (eq 'idle (buffer-local-value 'pilish--status chat))))
+            ('chat (pilish-test--kill-live-buffers chat))
+            ('input (pilish-test--kill-live-buffers input)))
+          (should-not (memq timer timer-list))
+          (cl-letf (((symbol-function 'force-mode-line-update)
+                     (lambda (&rest _) (push (current-buffer) refreshed))))
+            (pilish-test--fire-timer timer))
+          (should-not refreshed))))))
+
+(ert-deftest pilish-test-inactivity-cancelled-kill-keeps-monitoring ()
+  "A rejected kill decision must not cancel live observation."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (pilish-test--stdout proc '(:type "agent_start"))
+    (let ((timer (buffer-local-value 'pilish--inactivity-timer chat)))
+      (with-current-buffer chat
+        (let ((kill-buffer-query-functions (list (lambda () nil))))
+          (should-not (kill-buffer chat))))
+      (should (buffer-live-p chat))
+      (should (memq timer timer-list))
+      (setq now 1300.0)
+      (pilish-test--fire-timer timer)
+      (pilish-test--assert-inactivity input "thinking (no output 5m)"))))
+
+(ert-deftest pilish-test-inactivity-backward-clock-is-pure-until-owner-tick ()
+  "Backward time hides warning; the owner tick rebases without settlement."
+  (pilish-test-with-inactivity-session (chat input proc commands now)
+    (pilish-test--stdout proc '(:type "agent_start"))
+    (let ((timer (buffer-local-value 'pilish--inactivity-timer chat))
+          (normal (pilish-test--input-header input)))
+      (setq now 900.0)
+      (should (equal normal (pilish-test--input-header input)))
+      ;; A pure header read must not itself rewrite the observation clock.
+      (should (equal (process-get proc 'pilish-last-output-time) 1000.0))
+      (pilish-test--fire-timer timer)
+      (setq now 1200.0)
+      (pilish-test--assert-inactivity input "thinking (no output 5m)")
+      (should (eq 'streaming (buffer-local-value 'pilish--status chat)))
+      (should (memq timer timer-list)))))
+
+(ert-deftest pilish-test-inactivity-lost-owner-cancels-captured-timer ()
+  "A mode reset or dead chat retires its real timer without side effects."
+  (dolist (kill-before-tick '(nil t))
+    (ert-info ((format "kill-before-tick=%S" kill-before-tick))
+      (pilish-test-with-rpc-session (chat input proc commands)
+        (let (observer refreshed)
+          (unwind-protect
+              (progn
+                (pilish-test--adopt-rpc-process chat proc)
+                (pilish-test--stdout proc '(:type "agent_start"))
+                (setq observer (buffer-local-value 'pilish--inactivity-timer chat))
+                (should (memq observer timer-list))
+                (let ((last (process-get proc 'pilish-last-output-time)))
+                  (with-current-buffer chat (fundamental-mode))
+                  (should-not (buffer-local-value 'pilish--inactivity-timer chat))
+                  (when kill-before-tick (kill-buffer chat))
+                  (cl-letf (((symbol-function 'force-mode-line-update)
+                             (lambda (&rest _) (push (current-buffer) refreshed))))
+                    (with-temp-buffer (pilish-test--fire-timer observer)))
+                  (should-not (memq observer timer-list))
+                  (should-not refreshed)
+                  (should (equal last (process-get proc 'pilish-last-output-time)))
+                  (when (buffer-live-p chat)
+                    (should-not (buffer-local-value 'pilish--process chat))
+                    (should-not (buffer-local-value 'pilish--state chat))
+                    (should (eq 'idle (buffer-local-value 'pilish--status chat))))
+                  (should-not commands)))
+            (when observer (cancel-timer observer))))))))
+
+(ert-deftest pilish-test-polish-transcript-margins-exclude-input ()
+  "Hidden transcripts reserve a gutter and existing windows keep larger margins."
+  (let ((chat (generate-new-buffer " *polish-margin-chat*"))
+        (input (generate-new-buffer " *polish-margin-input*")))
+    (unwind-protect
+        (save-window-excursion
+          (delete-other-windows)
+          (with-current-buffer chat
+            (pilish-chat-mode)
+            (should (= left-margin-width 1)))
+          (switch-to-buffer chat)
+          (should (= (car (window-margins)) 1))
+          (let* ((first (selected-window))
+                 (second (split-window-right 28))
+                 (input-window (split-window first -5 'below)))
+            (set-window-buffer second chat)
+            (with-current-buffer input (pilish-input-mode))
+            (set-window-buffer input-window input)
+            (set-window-margins first 3 2)
+            (set-window-margins second 0 4)
+            (set-window-margins input-window 2 1)
+            (with-current-buffer chat
+              (run-hooks 'window-configuration-change-hook))
+            (should (equal (window-margins first) '(3 . 2)))
+            (should (equal (window-margins second) '(1 . 4)))
+            (should (equal (window-margins input-window) '(2 . 1)))
+            (should-not (= (window-total-width first) (window-total-width second)))
+            (with-selected-window second
+              (should (= (pilish--chat-display-width) (window-max-chars-per-line second))))))
+      (kill-buffer chat)
+      (kill-buffer input))))
+
+(ert-deftest pilish-test-unified-startup-summary-is-plain-and-singular ()
+  "Startup uses the same plain version/resource summary in both states."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (setq pilish--process-version "1.3.0"
+          pilish--commands '((:name "skill:review" :source "skill")
+                             (:name "release" :source "prompt")))
+    (let* ((compact (pilish--format-startup-banner-compact))
+           (expanded (pilish--format-startup-banner-expanded))
+           (expected (format "pi v1.3.0 · pilish %s · 1 skill · 1 prompt" pilish-version)))
+      (should (equal (substring-no-properties compact) expected))
+      (should (string-prefix-p (concat expected "\n\n") expanded))
+      (should-not (string-match-p "Details\\|RET opens\\|[▸▾]" expanded))
+      (should (get-text-property 0 'line-prefix compact)))))
+
+(ert-deftest pilish-test-unified-disclosure-copy-preserves-source-and-literals ()
+  "Ordinary copies lose caret paint, not hidden characters or literal data."
+  (with-temp-buffer
+    (insert (propertize "▸ visible\n" 'line-prefix
+                        (propertize " " 'display '(space :width 2) 'face 'bold))
+            (propertize "▾ hidden\n" 'invisible t 'custom-copy-property 'keep))
+    (pilish--put-disclosure (point-min) (point-max) nil #'ignore)
+    (let* ((prefix (get-text-property (point-min) 'line-prefix))
+           (hit (get-text-property (point-min) 'pilish-disclosure-hit))
+           (copy (pilish--disclosure-filter-substring (point-min) (point-max))))
+      (should (equal (substring-no-properties copy) "▸ visible\n▾ hidden\n"))
+      (should (eq (get-text-property 10 'custom-copy-property copy) 'keep))
+      (should (equal-including-properties (get-text-property 0 'line-prefix copy)
+                                          (propertize " " 'display '(space :width 2) 'face 'bold)))
+      (should-not (get-text-property 0 'pilish-disclosure-hit copy))
+      (should (eq prefix (get-text-property (point-min) 'line-prefix)))
+      (should (eq hit (get-text-property (point-min) 'pilish-disclosure-hit)))
+      (pilish--put-disclosure (point-min) (point-max) t #'ignore)
+      (should-not (eq hit (get-text-property (point-min) 'pilish-disclosure-hit)))
+      (should-error (pilish--put-disclosure (point-min) (point-max) t (lambda () t))))))
+
+(ert-deftest pilish-test-unified-disclosure-paint-is-not-a-text-edit ()
+  "Buffer and string paint preserve edit state and leave real edits observable."
+  (dolist (as-string '(nil t))
+    (dolist (modified '(nil t))
+      (dolist (undo-enabled '(nil t))
+        (with-temp-buffer
+          (when undo-enabled (buffer-enable-undo))
+          (insert "hidefold\nrest\n")
+          (let* ((object (and as-string (buffer-string)))
+                 (beg (if object 0 (point-min)))
+                 (end (+ beg 14))
+                 (native '(space :width 2))
+                 (prefix (propertize "base" 'face 'bold))
+                 (wrap '(space :width 3))
+                 (map (make-sparse-keymap))
+                 (before 0) (after 0) (property 0)
+                 previous-hit)
+            (add-text-properties beg end
+                                 `(wrap-prefix ,wrap keymap ,map
+                                   pilish-literal t
+                                   modification-hooks
+                                   (,(lambda (&rest _) (cl-incf property))))
+                                 object)
+            (put-text-property beg (+ beg 4) 'invisible t object)
+            (put-text-property beg (+ beg 4) 'line-prefix prefix object)
+            (put-text-property (+ beg 4) end 'line-prefix native object)
+            (setq property 0)
+            (set-buffer-modified-p modified)
+            (setq buffer-read-only t)
+            (add-hook 'before-change-functions
+                      (lambda (&rest _) (cl-incf before)) nil t)
+            (add-hook 'after-change-functions
+                      (lambda (&rest _) (cl-incf after)) nil t)
+            (let ((characters (buffer-substring-no-properties (point-min) (point-max)))
+                  (tick (buffer-chars-modified-tick))
+                  (undo buffer-undo-list)
+                  (undo-copy (copy-tree buffer-undo-list)))
+              (dolist (action '(ignore forward-char nil nil))
+                (should (eq (pilish--put-disclosure beg end (eq action 'forward-char)
+                                                   action object)
+                            object))
+                (when action
+                  (let ((hit (get-text-property beg 'pilish-disclosure-hit object)))
+                    (should (equal hit (vector action)))
+                    (should-not (eq hit previous-hit))
+                    (setq previous-hit hit)
+                    (dolist (position (list beg (+ beg 4)))
+                      (let* ((paint (get-text-property position 'line-prefix object))
+                             (glyph (cadr (get-text-property 0 'display paint))))
+                        (should (equal (substring-no-properties glyph)
+                                       (if (eq action 'forward-char) "▾" "▸")))
+                        (should (eq (get-text-property 0 'pilish-disclosure-hit glyph)
+                                    hit))))))
+                (should (= before 0))
+                (should (= after 0))
+                (should (= property 0))
+                (should (equal (buffer-substring-no-properties (point-min) (point-max))
+                               characters))
+                (should (equal (if object (substring-no-properties object) characters)
+                               "hidefold\nrest\n"))
+                (should (= tick (buffer-chars-modified-tick)))
+                (should (eq undo buffer-undo-list))
+                (should (equal undo-copy buffer-undo-list))
+                (should (eq (buffer-modified-p) modified))
+                (should buffer-read-only)
+                (should-not inhibit-read-only)
+                (should-not inhibit-modification-hooks))
+              (should (equal-including-properties
+                       (get-text-property beg 'line-prefix object) prefix))
+              (should (eq (get-text-property (+ beg 4) 'line-prefix object) native))
+              (should (eq (get-text-property (+ beg 9) 'line-prefix object) native))
+              (should (eq (get-text-property beg 'wrap-prefix object) wrap))
+              (should (eq (get-text-property beg 'keymap object) map))
+              (should (get-text-property beg 'pilish-literal object))
+              (should (get-text-property beg 'invisible object))
+              (should-not (text-property-not-all beg end 'pilish-disclosure-hit nil object))
+              (let ((inhibit-read-only t))
+                (goto-char 6)
+                (delete-char 1))
+              (should (> before 0))
+              (should (> after 0))
+              (unless as-string (should (> property 0))))))))))
+
+(ert-deftest pilish-test-unified-disclosure-native-prefix-roundtrip ()
+  "Native display prefixes survive caret repaint, copy, and removal exactly."
+  (let ((prefixes (list (list 'space :width 2))))
+    (when (image-type-available-p 'pbm)
+      (setq prefixes (append prefixes (list (create-image "P1\n1 1\n0\n" 'pbm t)))))
+    (dolist (native-prefix prefixes)
+      (dolist (as-string '(t nil))
+        (with-temp-buffer
+          (let* ((text (copy-sequence "fold\n"))
+                 (object (and as-string text))
+                 (beg (if object 0 1))
+                 (end (+ beg (length text)))
+                 (wrap (list 'space :width 3))
+                 (map (make-sparse-keymap))
+                 previous-hit)
+            (define-key map (kbd "RET") #'ignore)
+            (unless object (insert text))
+            (add-text-properties beg end
+                                 `(line-prefix ,native-prefix wrap-prefix ,wrap
+                                   keymap ,map) object)
+            (pilish--put-disclosure beg end nil nil object)
+            (should (eq (get-text-property beg 'line-prefix object) native-prefix))
+            (dolist (expanded '(nil t nil))
+              (let ((action (if expanded #'forward-char #'ignore)))
+                (pilish--put-disclosure beg end expanded action object)
+                (let* ((prefix (get-text-property beg 'line-prefix object))
+                       (hit (get-text-property beg 'pilish-disclosure-hit object))
+                       (glyph (cadr (get-text-property 0 'display prefix)))
+                       (copy (if object
+                                 (with-temp-buffer
+                                   (insert object)
+                                   (pilish--disclosure-filter-substring (point-min) (point-max)))
+                               (pilish--disclosure-filter-substring beg end))))
+                  (should (= (length prefix) 2))
+                  (should (eq (get-text-property 1 'display prefix) native-prefix))
+                  (should (equal (substring-no-properties glyph) (if expanded "▾" "▸")))
+                  (should (eq (get-text-property 0 'pilish-disclosure-hit glyph) hit))
+                  (should (eq (aref hit 0) action))
+                  (should-not (eq hit previous-hit))
+                  (setq previous-hit hit)
+                  (should (equal (substring-no-properties copy) "fold\n"))
+                  (should (eq (get-text-property 0 'line-prefix copy) native-prefix))
+                  (should (eq (get-text-property 0 'wrap-prefix copy) wrap))
+                  (should (eq (get-text-property 0 'keymap copy) map))
+                  (should-not (get-text-property 0 'pilish-disclosure-hit copy))
+                  (should (eq (get-text-property beg 'line-prefix object) prefix))
+                  (should (eq (get-text-property beg 'pilish-disclosure-hit object) hit))
+                  (should (eq (get-text-property beg 'wrap-prefix object) wrap))
+                  (should (eq (get-text-property beg 'keymap object) map)))))
+            (dotimes (_ 2)
+              (pilish--put-disclosure beg end nil nil object)
+              (should (eq (get-text-property beg 'line-prefix object) native-prefix))
+              (should (eq (get-text-property beg 'wrap-prefix object) wrap))
+              (should (eq (get-text-property beg 'keymap object) map))
+              (should-not (get-text-property beg 'pilish-disclosure-hit object)))
+            (should (eq (lookup-key map (kbd "RET")) #'ignore))))))))
+
+(ert-deftest pilish-test-unified-disclosure-margins-preserve-all-windows ()
+  "Each displaying window keeps its own larger margins without repeat writes."
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (let ((other (split-window-right)) (calls 0)
+            (original (symbol-function 'set-window-margins)))
+        (set-window-margins nil 3 4)
+        (set-window-margins other 5 7)
+        (setq-local right-margin-width 6)
+        (pilish--apply-disclosure-margins)
+        (should (equal (window-margins) '(3 . 6)))
+        (should (equal (window-margins other) '(5 . 7)))
+        (cl-letf (((symbol-function 'set-window-margins)
+                   (lambda (&rest args) (cl-incf calls) (apply original args))))
+          (pilish--apply-disclosure-margins))
+        (should (= calls 0))
+        (set-window-margins nil 3 nil)
+        (setq-local right-margin-width 0)
+        (cl-letf (((symbol-function 'set-window-margins)
+                   (lambda (&rest args) (cl-incf calls) (apply original args))))
+          (pilish--apply-disclosure-margins))
+        (should (= calls 0))))))
+
+(provide 'pilish-ui-test)
+;;; pilish-ui-test.el ends here

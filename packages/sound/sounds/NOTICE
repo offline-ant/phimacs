@@ -1,0 +1,7 @@
+done.wav and request.wav are converted from herdr's notification sounds
+(assets/sounds/done.mp3 and request.mp3, https://github.com/herdrdev/herdr,
+commit 0403775f), licensed under the Apache License 2.0 (LICENSE-APACHE-2.0).
+
+Modification: decoded once to 44.1 kHz mono signed 16-bit WAV with
+  ffmpeg -i <name>.mp3 -ac 1 -ar 44100 -c:a pcm_s16le -map_metadata -1 \
+    -fflags +bitexact -flags:a +bitexact <name>.wav

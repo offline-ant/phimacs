@@ -1,0 +1,525 @@
+import assert from "node:assert/strict";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
+import * as fs from "node:fs";
+import * as net from "node:net";
+import * as os from "node:os";
+import * as path from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+import { readProcessIdentity } from "@phimacs/pimux/process-identity";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { HostTarget } from "./host-types.ts";
+import { createWorkerArtifacts, formatWorkerRetryTime, writeWorkerRequest, writeWorkerStatus, type WorkerRequestFile } from "./worker-frame.ts";
+import { claimName, claimNameForOperation, listTargets, readTarget, removeTarget, runEphemeralWorker, saveTarget, settledTarget, validateName, waitForWorkerResult } from "./workers.ts";
+
+const target = (name: string): HostTarget => ({ host: "tmux", endpoint: "/tmp/fake-orchestration", id: "%2", kind: "pi", name });
+
+test("logical names are exclusively claimed and all target kinds share one registry", () => {
+  const name = `registry-${process.pid}`;
+  const release = claimName(name);
+  try {
+    assert.throws(() => claimName(name), /already being used/);
+    saveTarget(target(name));
+    assert.deepEqual(readTarget(name), target(name));
+    assert.ok(listTargets().some((entry) => entry.name === name));
+    assert.throws(() => validateName("../bad"), /Name must/);
+  } finally { removeTarget(name); release(); }
+  release();
+  claimName(name)();
+});
+
+test("operations on a name wait for each other; request claims fail at once; dead holders' claims are stale", async () => {
+  const name = `claims-${process.pid}`;
+  const claimFile = path.join(os.tmpdir(), "pi-orchestration-targets", `${name}.json.claim`);
+  // A start in progress: a lookup sees its result, and a later close waits for it.
+  const start = await claimNameForOperation(name);
+  const order: string[] = [];
+  const lookup = settledTarget(name).then((found) => { order.push(`lookup ${found?.name}`); });
+  saveTarget(target(name));
+  order.push("start");
+  start();
+  await lookup;
+  assert.deepEqual(order, ["start", `lookup ${name}`]);
+  const close = await claimNameForOperation(name);
+  let started = false;
+  const next = claimNameForOperation(name).then((release) => { started = true; return release; });
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  assert.equal(started, false, "a start waits while a close of the same name runs");
+  removeTarget(name);
+  close();
+  (await next)();
+  // A worker's request lasts its whole run: operations fail instead of waiting.
+  const request = claimName(name);
+  try { await assert.rejects(claimNameForOperation(name), /already being used/); }
+  finally { request(); }
+  // A claim whose process no longer exists blocks nothing.
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid!;
+  for (const purpose of ["operation", "request"]) {
+    fs.writeFileSync(claimFile, JSON.stringify({ process: { ...readProcessIdentity(process.pid)!, pid: dead }, purpose, token: "stale-claim" }), { mode: 0o600 });
+    assert.equal(await settledTarget(name), undefined);
+    claimName(name)();
+  }
+  assert.equal(fs.existsSync(claimFile), false);
+});
+
+test("matching result is completion even when the process exits during native state I/O", async () => {
+  const paths = createWorkerArtifacts();
+  const pi = { exec: async () => {
+    fs.writeFileSync(paths.resultPath, JSON.stringify({ id: "matching", result: "Result", retrospective: "Notes", timestamp: new Date().toISOString() }));
+    return { code: 0, stdout: "1", stderr: "", truncated: false, killed: false };
+  } } as unknown as ExtensionAPI;
+  try {
+    const output = await waitForWorkerResult(pi, { id: "matching", target: target("matching"), paths, task: "Task", sessionFile: "/tmp/test.jsonl" });
+    assert.equal(output.result.result, "Result");
+    assert.equal(output.result.retrospective, "Notes");
+    assert.deepEqual(output.details.target, target("matching"));
+  } finally { fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+test("worker results and progress retain their captured Emacs endpoint", async () => {
+  const paths = createWorkerArtifacts();
+  const worker: HostTarget = { host: "emacs", endpoint: "/tmp/captured-emacs", id: "worker_1", kind: "pi", name: "emacs-worker" };
+  const updates: unknown[] = [];
+  try {
+    const output = await waitForWorkerResult({} as ExtensionAPI, {
+      id: "credentials", target: worker, paths, task: "Task", sessionFile: "/tmp/test.jsonl",
+      onUpdate: (update) => {
+        updates.push(update);
+        fs.writeFileSync(paths.resultPath, JSON.stringify({ id: "credentials", result: "Result", retrospective: "Notes", timestamp: new Date().toISOString() }));
+      },
+    });
+    assert.equal(updates.length, 1);
+    assert.deepEqual(output.details.target, worker);
+    assert.ok(JSON.stringify(updates).includes(worker.endpoint));
+  } finally { fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+test("a published worker process-start identity decides liveness, so a stalled host cannot end healthy work", { timeout: 10_000 }, async () => {
+  const paths = createWorkerArtifacts();
+  const abort = new AbortController();
+  let hostCalls = 0;
+  const pi = { exec: async () => {
+    hostCalls++;
+    return { code: 1, stdout: "", stderr: "host is stalled", truncated: false, killed: false };
+  } } as unknown as ExtensionAPI;
+  try {
+    writeWorkerStatus(paths.statusPath, { id: "current", state: "running" });
+    const waited = waitForWorkerResult(pi, { id: "current", target: target("current"), paths, task: "Task", sessionFile: "/tmp/test.jsonl", signal: abort.signal });
+    await new Promise((resolve) => setTimeout(resolve, 6500));
+    assert.equal(hostCalls, 0);
+    fs.writeFileSync(paths.resultPath, JSON.stringify({ id: "current", result: "Survived", timestamp: new Date().toISOString() }));
+    assert.equal((await waited).result.result, "Survived");
+  } finally { abort.abort(); fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+test("a dead worker identity without a result fails like any exit; another request's identity does not count", async () => {
+  const paths = createWorkerArtifacts();
+  const dead = spawnSync(process.execPath, ["-e", ""]).pid!;
+  const pi = { exec: async () => ({ code: 0, stdout: "1", stderr: "", truncated: false, killed: false }) } as unknown as ExtensionAPI;
+  try {
+    fs.writeFileSync(paths.statusPath, JSON.stringify({ id: "current", state: "running", process: { ...readProcessIdentity(process.pid)!, pid: dead }, updatedAt: new Date().toISOString() }));
+    const options = { id: "current", target: target("current"), paths, task: "Task", sessionFile: "/tmp/test.jsonl" };
+    await assert.rejects(waitForWorkerResult(pi, options), /exited before writing a final result/);
+    // Another request's identity is ignored, so the host's answer (pane dead) decides.
+    fs.writeFileSync(paths.statusPath, JSON.stringify({ id: "another", state: "running", process: readProcessIdentity(process.pid), updatedAt: new Date().toISOString() }));
+    await assert.rejects(waitForWorkerResult(pi, options), /exited before writing a final result/);
+  } finally { fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+test("before a PID is published, host state failures get a bounded grace period", { timeout: 10_000 }, async () => {
+  const paths = createWorkerArtifacts();
+  let hostCalls = 0;
+  const pi = { exec: async () => {
+    hostCalls++;
+    return { code: 0, stdout: "", stderr: "", truncated: false, killed: true };
+  } } as unknown as ExtensionAPI;
+  try {
+    await assert.rejects(waitForWorkerResult(pi, { id: "current", target: target("current"), paths, task: "Task", sessionFile: "/tmp/test.jsonl" }), /Could not inspect worker/);
+    assert.ok(hostCalls >= 2);
+  } finally { fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+test("process death without a result and mismatched late artifacts are failures", async () => {
+  const paths = createWorkerArtifacts();
+  const pi = { exec: async () => ({ code: 0, stdout: "1", stderr: "", truncated: false, killed: false }) } as unknown as ExtensionAPI;
+  try {
+    const options = { id: "current", target: target("current"), paths, task: "Task", sessionFile: "/tmp/test.jsonl" };
+    await assert.rejects(waitForWorkerResult(pi, options), /exited before writing a final result/);
+    fs.writeFileSync(paths.resultPath, JSON.stringify({ id: "late", result: "Old", timestamp: new Date().toISOString() }));
+    await assert.rejects(waitForWorkerResult(pi, options), /id mismatch/);
+  } finally { fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+test("an authoritative target identity outlives frontend loss even before any status", async () => {
+  const paths = createWorkerArtifacts();
+  let hostCalls = 0;
+  const pi = { exec: async () => { hostCalls++; throw new Error("frontend disconnected"); } } as unknown as ExtensionAPI;
+  const owned = { ...target("starting"), process: readProcessIdentity(process.pid)! };
+  try {
+    const result = await waitForWorkerResult(pi, { id: "starting", target: owned, paths, sessionFile: "/tmp/test.jsonl", task: "Task",
+      onUpdate: () => fs.writeFileSync(paths.resultPath, JSON.stringify({ id: "starting", result: "survived", timestamp: new Date().toISOString() })),
+    });
+    assert.equal(result.result.result, "survived");
+    assert.equal(hostCalls, 0);
+  } finally { fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+test("PID reuse is an exit and a status without a process identity is invalid", async () => {
+  const paths = createWorkerArtifacts();
+  let hostCalls = 0;
+  const pi = { exec: async () => { hostCalls++; return { code: 0, stdout: "1", stderr: "", truncated: false, killed: false }; } } as unknown as ExtensionAPI;
+  const identity = readProcessIdentity(process.pid)!;
+  const options = { id: "reuse", target: target("reuse"), paths, sessionFile: "/tmp/test.jsonl", task: "Task" };
+  try {
+    fs.writeFileSync(paths.statusPath, JSON.stringify({ id: "reuse", state: "running", updatedAt: "now",
+      process: { ...identity, startTime: `${BigInt(identity.startTime) + 1n}` } }));
+    await assert.rejects(waitForWorkerResult(pi, options), /exited before writing/);
+    assert.equal(hostCalls, 0);
+    // A bare PID names no process start: the status is invalid, never trusted.
+    fs.writeFileSync(paths.statusPath, JSON.stringify({ id: "reuse", state: "running", updatedAt: "now", pid: process.pid }));
+    await assert.rejects(waitForWorkerResult(pi, options), /Invalid worker process identity/);
+    assert.equal(hostCalls, 0);
+  } finally { fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+test("a reused PID cannot retain a dead process's name claim", () => {
+  const name = `reuse-name-${process.pid}`;
+  const release = claimName(name);
+  release();
+  const file = path.join(os.tmpdir(), "pi-orchestration-targets", `${name}.json.claim`);
+  const identity = readProcessIdentity(process.pid)!;
+  fs.writeFileSync(file, JSON.stringify({ process: { ...identity, startTime: `${BigInt(identity.startTime) + 1n}` }, token: "old-process", purpose: "request" }), { mode: 0o600 });
+  claimName(name)();
+  assert.equal(fs.existsSync(file), false);
+});
+
+interface FakePane { server: net.Server; dead: boolean; child: ChildProcess }
+function fakeTmux(onRequest: (request: WorkerRequestFile) => void) {
+  const panes = new Map<string, FakePane>();
+  const requests: WorkerRequestFile[] = [];
+  const startupArgs: string[][] = [];
+  const closes: string[] = [];
+  const taskLeases = new Map<string, string>();
+  let next = 10;
+  const pi = {
+    exec: async (_command: string, args: string[]) => {
+      const command = args[2];
+      let stdout = "";
+      if (command === "new-window") {
+        startupArgs.push(args);
+        const id = `%${next++}`;
+        const taskLease = args.find((arg) => arg.startsWith("PHIMACS_PARENT_TASK_FILE="))?.slice("PHIMACS_PARENT_TASK_FILE=".length);
+        if (taskLease) {
+          taskLeases.set(id, taskLease);
+          assert.equal(JSON.parse(fs.readFileSync(taskLease, "utf8")).state, "active", "ownership exists before host creation");
+        }
+        const control = args.find((arg) => arg.startsWith("PI_ORCHESTRATION_CONTROL="))?.split("=")[1];
+        assert.ok(control);
+        const leaseFile = args.find((arg) => arg.startsWith("PHIMACS_PARENT_TASK_FILE="))?.slice("PHIMACS_PARENT_TASK_FILE=".length);
+        assert.ok(leaseFile, "the worker finds its request beside its parent task lease");
+        const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+        await once(child, "spawn");
+        const identity = readProcessIdentity(child.pid!)!;
+        const server = net.createServer((socket) => {
+          let data = "";
+          socket.on("data", (chunk) => {
+            data += chunk.toString();
+            if (!data.endsWith("\n")) return;
+            const input = JSON.parse(data) as { kind: string; text?: string };
+            if (input.kind === "prompt") {
+              const artifacts = path.dirname(leaseFile);
+              assert.equal(input.text, fs.readFileSync(path.join(artifacts, "prompt.md"), "utf8"), "the parent sends the exact first prompt");
+              const request = JSON.parse(fs.readFileSync(path.join(artifacts, "request.json"), "utf8")) as WorkerRequestFile;
+              requests.push(request);
+              onRequest(request);
+              if (request.statusPath && fs.existsSync(request.statusPath)) {
+                const status = JSON.parse(fs.readFileSync(request.statusPath, "utf8"));
+                fs.writeFileSync(request.statusPath, JSON.stringify({ ...status, process: identity }));
+              }
+            }
+            socket.end(JSON.stringify({ dispatched: true, process: identity }));
+            if (input.kind === "stop") child.kill("SIGTERM");
+          });
+        });
+        await new Promise<void>((resolve) => server.listen(control, resolve));
+        panes.set(id, { server, dead: false, child });
+        stdout = id;
+      } else if (command === "display-message") {
+        stdout = panes.get(args[5])?.dead ? "1" : "0";
+      } else if (command === "kill-pane") {
+        const id = args[4];
+        closes.push(id);
+        const taskLease = taskLeases.get(id);
+        if (taskLease) assert.equal(JSON.parse(fs.readFileSync(taskLease, "utf8")).state, "ended", "task ends before any host close I/O");
+        const pane = panes.get(id);
+        if (pane) { pane.dead = true; pane.child.kill("SIGTERM"); await new Promise<void>((resolve) => pane.server.close(() => resolve())); }
+      }
+      return { code: 0, stdout, stderr: "", truncated: false, killed: false };
+    },
+    events: { on: () => () => {} },
+    on: () => {},
+    getActiveTools: () => ["read"],
+    getThinkingLevel: () => "high",
+  } as unknown as ExtensionAPI;
+  return { pi, requests, startupArgs, closes, cleanup: async () => {
+    for (const pane of panes.values()) {
+      pane.child.kill("SIGTERM");
+      if (!pane.dead) await new Promise<void>((resolve) => pane.server.close(() => resolve()));
+    }
+  } };
+}
+
+function complete(request: WorkerRequestFile): void {
+  fs.writeFileSync(request.resultPath, JSON.stringify({ id: request.id, result: request.task, retrospective: "everything was ok", timestamp: new Date().toISOString() }));
+  if (request.statusPath) fs.writeFileSync(request.statusPath, JSON.stringify({ id: request.id, state: "idle", updatedAt: new Date().toISOString() }));
+}
+
+function selectFakeTmux(): () => void {
+  const keys = ["PI_ORCHESTRATION_HOST", "PI_ORCHESTRATION_ENDPOINT", "TMUX_PANE", "PHIMACS_PI"];
+  const before = keys.map((key) => process.env[key]);
+  process.env.PI_ORCHESTRATION_HOST = "tmux";
+  process.env.PI_ORCHESTRATION_ENDPOINT = "/tmp/fake-orchestration";
+  process.env.TMUX_PANE = "%1";
+  process.env.PHIMACS_PI = fileURLToPath(new URL("../../node_modules/.bin/pi", import.meta.url));
+  return () => keys.forEach((key, index) => {
+    if (before[index] === undefined) delete process.env[key]; else process.env[key] = before[index];
+  });
+}
+
+test("ephemeral siblings overlap their task lifetimes, inherit launch arguments, preview, and close", async () => {
+  const restore = selectFakeTmux();
+  const pending: WorkerRequestFile[] = [];
+  const fake = fakeTmux((request) => { pending.push(request); if (pending.length === 2) pending.forEach(complete); });
+  const first = createWorkerArtifacts();
+  const second = createWorkerArtifacts();
+  const updates: unknown[] = [];
+  try {
+    const run = (paths: typeof first, index: number) => {
+      const id = `parallel-${process.pid}-${index}`;
+      writeWorkerRequest(paths, { id, task: id, tools: ["read", "delegate"], model: { provider: "fake", id: "fake" }, thinkingLevel: "high", resultPolicy: "retrospective", resultPath: paths.resultPath, statusPath: paths.statusPath });
+      return runEphemeralWorker(fake.pi, { id, name: id, cwd: "/tmp", sessionFile: path.join(paths.artifactDir, "session.jsonl"), args: ["--provider", "fake", "--model", "fake", "--thinking", "high"], paths, task: id, onUpdate: (update) => updates.push(update) });
+    };
+    const results = await Promise.all([run(first, 1), run(second, 2)]);
+    assert.equal(pending.length, 2);
+    assert.equal(fake.closes.length, 2);
+    assert.ok(fake.startupArgs.every((args) => args.at(-1)?.includes("'--thinking' 'high'")));
+    assert.equal(results[0].result.retrospective, "everything was ok");
+    for (const paths of [first, second]) {
+      const task = JSON.parse(fs.readFileSync(path.join(paths.artifactDir, "parent-task.json"), "utf8"));
+      assert.equal(task.state, "ended");
+      assert.deepEqual(task.process, readProcessIdentity(process.pid));
+      assert.ok(fake.startupArgs.some((args) => args.includes(`PHIMACS_PARENT_TASK_FILE=${path.join(paths.artifactDir, "parent-task.json")}`)));
+    }
+    assert.equal(readTarget(`parallel-${process.pid}-1`), undefined);
+    assert.ok(updates.length > 0);
+  } finally {
+    await fake.cleanup(); restore();
+    fs.rmSync(first.artifactDir, { recursive: true, force: true });
+    fs.rmSync(second.artifactDir, { recursive: true, force: true });
+  }
+});
+
+test("cancellation closes ephemeral work instead of abandoning its wait", async () => {
+  const restore = selectFakeTmux();
+  const abort = new AbortController();
+  const fake = fakeTmux(() => { setTimeout(() => abort.abort(), 20); });
+  const paths = createWorkerArtifacts();
+  const name = `cancel-${process.pid}`;
+  try {
+    writeWorkerRequest(paths, { id: name, task: "wait", tools: ["read"], model: { provider: "fake", id: "fake" }, thinkingLevel: "high", resultPolicy: "retrospective", resultPath: paths.resultPath });
+    await assert.rejects(runEphemeralWorker(fake.pi, { id: name, name, cwd: "/tmp", sessionFile: "/tmp/fake-session.jsonl", args: [], paths, task: "wait", signal: abort.signal }), /abort/i);
+    assert.equal(fake.closes.length, 1);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(paths.artifactDir, "parent-task.json"), "utf8")).state, "ended");
+    assert.equal(readTarget(name), undefined);
+    claimName(name)();
+  } finally { await fake.cleanup(); restore(); fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+});
+
+for (const outcome of ["completion", "cancellation"] as const) {
+  test(`a waiting worker remains pending and owned until ${outcome}`, { timeout: 10_000 }, async () => {
+    const restore = selectFakeTmux();
+    const abort = new AbortController();
+    const paths = createWorkerArtifacts();
+    const name = `waiting-${process.pid}-${outcome}`;
+    let request: WorkerRequestFile | undefined;
+    let updates = 0;
+    let settled = false;
+    const fake = fakeTmux((received) => {
+      request = received;
+      writeWorkerStatus(received.statusPath, {
+        id: received.id,
+        state: "waiting",
+        waitingReason: "Worker run ended without a result: 429 quota exceeded",
+      });
+    });
+    writeWorkerRequest(paths, { id: name, task: "Recover manually", tools: ["read"], model: { provider: "fake", id: "fake" }, thinkingLevel: "high", resultPolicy: "retrospective", resultPath: paths.resultPath, statusPath: paths.statusPath });
+    const running = runEphemeralWorker(fake.pi, {
+      id: name, name, cwd: "/tmp", sessionFile: "/tmp/fake-session.jsonl", args: [], paths, task: "Recover manually", signal: abort.signal,
+      onUpdate: (update) => {
+        assert.ok(request);
+        const text = update.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+        assert.ok(text.includes(`Worker ${name} is waiting for you.`));
+        assert.match(text, /429 quota exceeded/);
+        assert.match(text, /\/worker-return \[text\]/);
+        assert.equal((update.details as { status: string }).status, "waiting");
+        assert.equal(settled, false);
+        assert.equal(fake.closes.length, 0);
+        assert.ok(readTarget(name));
+        assert.throws(() => claimName(name), /already being used/);
+        assert.equal(fs.existsSync(paths.resultPath), false);
+        // The second update proves the parent keeps following the live worker.
+        if (++updates < 2) return;
+        if (outcome === "completion") complete(request);
+        else abort.abort();
+      },
+    });
+    const settlement = running.then(
+      (value) => { settled = true; return { value }; },
+      (error: unknown) => { settled = true; return { error }; },
+    );
+    try {
+      const result = await settlement;
+      if (outcome === "completion") {
+        assert.ok("value" in result);
+        assert.equal(result.value.result.result, "Recover manually");
+        assert.equal(result.value.details.status, "finished");
+      } else {
+        assert.ok("error" in result);
+        assert.ok(result.error instanceof Error);
+        assert.match(result.error.message, /abort/i);
+        assert.equal(fs.existsSync(paths.resultPath), false);
+      }
+      assert.ok(updates >= 2);
+      assert.equal(fake.closes.length, 1);
+      assert.equal(readTarget(name), undefined);
+      claimName(name)();
+      assert.ok(fs.existsSync(paths.statusPath), "recovery artifacts remain available");
+    } finally {
+      abort.abort();
+      await settlement;
+      await fake.cleanup(); restore();
+      fs.rmSync(paths.artifactDir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const outcome of ["completion", "cancellation"] as const) {
+  test(`quota recovery remains owned and publishes its deadline until ${outcome}`, async () => {
+    const restore = selectFakeTmux();
+    const paths = createWorkerArtifacts();
+    const name = `quota-${process.pid}-${outcome}`;
+    const abort = new AbortController();
+    const retryAt = Date.now() + 60_000;
+    let request: WorkerRequestFile | undefined;
+    let observed = false;
+    const fake = fakeTmux((received) => {
+      request = received;
+      writeWorkerStatus(received.statusPath, { id: received.id, state: "running", retryAt });
+    });
+    try {
+      writeWorkerRequest(paths, { id: name, task: "Recover after reset", tools: ["read"], model: { provider: "fake", id: "fake" }, thinkingLevel: "high", resultPolicy: "retrospective", resultPath: paths.resultPath, statusPath: paths.statusPath });
+      const running = runEphemeralWorker(fake.pi, {
+        id: name, name, cwd: "/tmp", sessionFile: "/tmp/quota-session.jsonl", args: [], paths, task: "Recover after reset", signal: abort.signal,
+        onUpdate: (update) => {
+          assert.ok(request);
+          const text = update.content.filter((block) => block.type === "text").map((block) => block.text).join("\n");
+          assert.match(text, /waiting for provider quota/);
+          assert.ok(text.includes(formatWorkerRetryTime(retryAt)));
+          assert.equal((update.details as { status: string; retryAt: number }).status, "quota-wait");
+          assert.equal((update.details as { retryAt: number }).retryAt, retryAt);
+          assert.equal(fake.closes.length, 0);
+          assert.ok(readTarget(name));
+          assert.throws(() => claimName(name), /already being used/);
+          assert.equal(fs.existsSync(paths.resultPath), false);
+          observed = true;
+          if (outcome === "completion") complete(request);
+          else abort.abort();
+        },
+      });
+      if (outcome === "completion") {
+        const result = await running;
+        assert.equal(result.result.result, "Recover after reset");
+        assert.equal(result.details.status, "finished");
+        assert.equal(result.details.retryAt, undefined);
+      } else await assert.rejects(running, /abort/i);
+      assert.equal(observed, true);
+      assert.equal(fake.closes.length, 1);
+      assert.equal(readTarget(name), undefined);
+      claimName(name)();
+    } finally {
+      abort.abort();
+      await fake.cleanup(); restore();
+      fs.rmSync(paths.artifactDir, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const state of ["running", "retrospective"] as const) {
+  test(`parent ignores quota deadline on ${state === "running" ? "another request" : "retrospective work"}`, async () => {
+    const paths = createWorkerArtifacts();
+    const abort = new AbortController();
+    const pi = { exec: async () => ({ code: 0, stdout: "0", stderr: "", truncated: false, killed: false }) } as unknown as ExtensionAPI;
+    try {
+      writeWorkerStatus(paths.statusPath, { id: state === "running" ? "another" : "matching", state, retryAt: Date.now() + 60_000 });
+      await assert.rejects(waitForWorkerResult(pi, {
+        id: "matching", target: target("matching"), paths, task: "Task", sessionFile: "/tmp/test.jsonl", signal: abort.signal,
+        onUpdate: (update) => {
+          assert.doesNotMatch(JSON.stringify(update), /quota-wait|retryAt|retry scheduled/);
+          abort.abort();
+        },
+      }), /abort/i);
+    } finally { abort.abort(); fs.rmSync(paths.artifactDir, { recursive: true, force: true }); }
+  });
+}
+
+test("a failed close keeps a finished worker's result and its target", async () => {
+  const restore = selectFakeTmux();
+  const paths = createWorkerArtifacts();
+  const name = `close-after-result-${process.pid}`;
+  const fake = fakeTmux((request) => complete({ ...request, id: name }));
+  const exec = fake.pi.exec;
+  fake.pi.exec = async (command, args, options) => args[2] === "kill-pane"
+    ? { code: 1, stdout: "", stderr: "Host close failed", truncated: false, killed: false }
+    : exec(command, args, options);
+  try {
+    writeWorkerRequest(paths, { id: name, task: "wait", tools: ["read"], model: { provider: "fake", id: "fake" }, thinkingLevel: "high", resultPolicy: "retrospective", resultPath: paths.resultPath });
+    const output = await runEphemeralWorker(fake.pi, { id: name, name, cwd: "/tmp", sessionFile: "/tmp/fake-session.jsonl", args: [], paths, task: "wait" });
+    assert.match(output.result.result, /Could not close worker/);
+    assert.ok(readTarget(name), "failed cleanup must retain the target for stopping by hand");
+    claimName(name)();
+  } finally {
+    const owned = readTarget(name);
+    await fake.cleanup();
+    if (owned?.controlPath) fs.rmSync(path.dirname(owned.controlPath), { recursive: true, force: true });
+    removeTarget(name); restore(); fs.rmSync(paths.artifactDir, { recursive: true, force: true });
+  }
+});
+
+test("cleanup failure retains the original protocol error, target, and recovery artifacts", async () => {
+  const restore = selectFakeTmux();
+  const fake = fakeTmux((request) => complete({ ...request, id: "late" }));
+  const exec = fake.pi.exec;
+  fake.pi.exec = async (command, args, options) => args[2] === "kill-pane"
+    ? { code: 1, stdout: "", stderr: "Host close failed", truncated: false, killed: false }
+    : exec(command, args, options);
+  const paths = createWorkerArtifacts();
+  const name = `close-error-${process.pid}`;
+  try {
+    writeWorkerRequest(paths, { id: name, task: "wait", tools: ["read"], model: { provider: "fake", id: "fake" }, thinkingLevel: "high", resultPolicy: "retrospective", resultPath: paths.resultPath });
+    await assert.rejects(runEphemeralWorker(fake.pi, { id: name, name, cwd: "/tmp", sessionFile: "/tmp/fake-session.jsonl", args: [], paths, task: "wait" }), (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /id mismatch/);
+      assert.match(error.message, /Could not close worker/);
+      assert.ok(error.message.includes(paths.artifactDir));
+      return true;
+    });
+    assert.ok(readTarget(name), "failed cleanup must retain the target for recovery");
+    claimName(name)();
+  } finally {
+    const owned = readTarget(name);
+    await fake.cleanup();
+    if (owned?.controlPath) fs.rmSync(path.dirname(owned.controlPath), { recursive: true, force: true });
+    removeTarget(name); restore(); fs.rmSync(paths.artifactDir, { recursive: true, force: true });
+  }
+});

@@ -1,0 +1,78 @@
+{
+  "name": "@phimacs/extensions",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Pi extensions: safety lints, session tools, workflows and skills",
+  "keywords": [
+    "pi-package",
+    "pi-extension"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/offline-ant/phimacs.git",
+    "directory": "packages/extensions"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json",
+    "compile": "node ../../scripts/compile-package.mjs && cp extensions/agents-md-template.md extensions/workflow-template.md dist/extensions/",
+    "prepack": "npm run compile"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "bin": {
+    "pi-guidance-loop": "./bin/pi-guidance-loop"
+  },
+  "pi": {
+    "skills": [
+      "./skills"
+    ],
+    "extensions": [
+      "./host-modules.ts",
+      "./dist/extensions/bash.js",
+      "./dist/extensions/lints.js",
+      "./dist/extensions/exec-lints.js",
+      "./dist/extensions/tweaks.js",
+      "./dist/extensions/guidance.js",
+      "./dist/extensions/ugo.js",
+      "./dist/extensions/ask.js",
+      "./dist/extensions/py.js",
+      "./dist/extensions/error-prompt.js",
+      "./dist/extensions/herdr-finish.js",
+      "./dist/extensions/working-text.js",
+      "./dist/extensions/cwd.js",
+      "./dist/extensions/copy-quote/index.js",
+      "./dist/extensions/git-commit.js",
+      "./dist/extensions/workboard.js",
+      "./dist/extensions/init-agents-md.js",
+      "./dist/extensions/worktree.js",
+      "./dist/extensions/document-flow-review.js",
+      "./dist/extensions/vim.js",
+      "./dist/extensions/agents-d.js",
+      "./dist/extensions/self-compact.js",
+      "./dist/extensions/prompt-history.js",
+      "./dist/extensions/tools.js"
+    ]
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "files": [
+    "dist",
+    "host-modules.ts",
+    "skills",
+    "bin",
+    "LICENSE",
+    "README.md",
+    "HOWTO-UGO.md"
+  ],
+  "dependencies": {
+    "@phimacs/orchestration": "0.1.0",
+    "@phimacs/pimux": "0.1.0",
+    "micromark": "4.0.2"
+  }
+}

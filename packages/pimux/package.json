@@ -1,0 +1,118 @@
+{
+  "name": "@phimacs/pimux",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Service-owned Pi runtimes shared by equal frontends over private Unix sockets",
+  "keywords": [
+    "pi",
+    "multiplexer",
+    "rpc"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/offline-ant/phimacs.git",
+    "directory": "packages/pimux"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json",
+    "compile": "node ../../scripts/compile-package.mjs",
+    "prepack": "npm run compile"
+  },
+  "exports": {
+    "./discovery": {
+      "types": "./dist/discovery.d.ts",
+      "default": "./dist/discovery.js"
+    },
+    "./protocol": {
+      "types": "./dist/protocol.d.ts",
+      "default": "./dist/protocol.js"
+    },
+    "./endpoint": {
+      "types": "./dist/endpoint.d.ts",
+      "default": "./dist/endpoint.js"
+    },
+    "./jsonl": {
+      "types": "./dist/jsonl.d.ts",
+      "default": "./dist/jsonl.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    },
+    "./ownership": {
+      "types": "./dist/ownership.d.ts",
+      "default": "./dist/ownership.js"
+    },
+    "./transaction": {
+      "types": "./dist/transaction.d.ts",
+      "default": "./dist/transaction.js"
+    },
+    "./process-identity": {
+      "types": "./dist/process-identity.d.ts",
+      "default": "./dist/process-identity.js"
+    },
+    "./private-files": {
+      "types": "./dist/private-files.d.ts",
+      "default": "./dist/private-files.js"
+    },
+    "./request": {
+      "types": "./dist/request.d.ts",
+      "default": "./dist/request.js"
+    },
+    "./guard": {
+      "types": "./dist/guard.d.ts",
+      "default": "./dist/guard.js"
+    },
+    "./host": {
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
+    },
+    "./host-identity": {
+      "types": "./dist/host-identity.d.ts",
+      "default": "./dist/host-identity.js"
+    },
+    "./service-client": {
+      "types": "./dist/service-client.d.ts",
+      "default": "./dist/service-client.js"
+    },
+    "./host-modules": {
+      "types": "./dist/host-modules.d.ts",
+      "default": "./dist/host-modules.js"
+    },
+    "./main": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    },
+    "./companion": {
+      "types": "./dist/companion.d.ts",
+      "default": "./dist/companion.js"
+    },
+    "./tree-navigate": {
+      "types": "./dist/tree-navigate.d.ts",
+      "default": "./dist/tree-navigate.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "LICENSE",
+    "NOTICE.md",
+    "README.md"
+  ],
+  "bin": {
+    "pimux": "./bin/pimux"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  }
+}

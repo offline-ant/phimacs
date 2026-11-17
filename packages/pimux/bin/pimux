@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// Control commands never load the SDK; exec preserves launcher PID and signals.
+import { fileURLToPath } from "node:url";
+import { control } from "../dist/control.js";
+
+try {
+  const args = process.argv.slice(2);
+  if (args[0] === "serve" || args[0] === "start" || args[0] === "tui") {
+    const entry = fileURLToPath(new URL("../dist/launch-entry.js", import.meta.url));
+    process.execve(process.execPath, [process.execPath, ...process.execArgv, entry, ...args], process.env);
+    throw new Error("Launch exec returned without replacing the CLI");
+  }
+  await control(args);
+} catch (error) {
+  process.stderr.write(`pimux: ${error instanceof Error ? error.message : String(error)}\n`);
+  process.exitCode = 1;
+}

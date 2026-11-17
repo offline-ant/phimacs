@@ -1,0 +1,29 @@
+# Byte-compiled files
+*.elc
+
+# Auto-save files
+*~
+\#*\#
+
+# Backup files
+*.orig
+
+# Package archives
+*.tar
+
+# Test dependencies (Ollama models, pi CLI)
+.cache/
+
+# Local scratch directory
+tmp/
+
+# Review images belong in tmp/ and pull request attachments, not the package.
+/assets/*
+!/assets/pilish-logo.svg
+
+# Local pi prompts and config
+.pi/
+.deps-stamp
+
+# Local worktrees
+.worktrees/

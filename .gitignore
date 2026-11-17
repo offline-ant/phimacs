@@ -1,0 +1,9 @@
+node_modules/
+**/dist/
+*.elc
+*.eln
+.cache/
+artifacts/
+.staging/
+*.tgz
+*.log

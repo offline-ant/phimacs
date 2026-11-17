@@ -1,0 +1,718 @@
+;;; pi-deck-detached-test.el --- Detached desktop contract tests -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: MIT
+
+(require 'ert)
+(require 'pi-deck)
+
+;; These tests exercise deck's side of the public contract. They do not certify
+;; Pilish's socket implementation; the native lane must exercise that separately.
+(defvar pi-deck-detached--views)
+(defvar pi-deck-detached--calls)
+(defvar pi-deck-detached--stop-callback)
+
+(defun pi-deck-detached--value (buffer key)
+  (plist-get (gethash buffer pi-deck-detached--views) key))
+
+(defun pi-deck-detached--view (state)
+  (let* ((directory (or (plist-get state :directory) temporary-file-directory))
+         (name (or (plist-get state :name) "view"))
+         (chat (generate-new-buffer (format "*deck-detached:%s*" name)))
+         (input (generate-new-buffer (format "*deck-input:%s*" name))))
+    (with-current-buffer chat (setq major-mode 'pilish-chat-mode default-directory directory))
+    (with-current-buffer input (insert (or (plist-get state :draft) "")))
+    (puthash chat (append (list :input input) (copy-tree state)) pi-deck-detached--views)
+    chat))
+
+(defun pi-deck-detached--desktop (buffer)
+  (let* ((state (copy-tree (gethash buffer pi-deck-detached--views)))
+         (input (plist-get state :input)))
+    (plist-put state :draft (with-current-buffer input (buffer-string)))
+    (cl-remf state :input)
+    state))
+
+(defun pi-deck-detached--restore (state)
+  (push (list 'restore (copy-tree state)) pi-deck-detached--calls)
+  (pi-deck-detached--view state))
+
+(defun pi-deck-detached--close (buffer)
+  (push (list 'disconnect buffer) pi-deck-detached--calls)
+  (when-let* ((input (pi-deck-detached--value buffer :input))) (kill-buffer input))
+  (kill-buffer buffer))
+
+(defmacro pi-deck-detached--with-desktop (&rest body)
+  (declare (indent 0))
+  `(let* ((directory (file-name-as-directory (make-temp-file "deck-desktop-" t)))
+          (pi-deck-detached--views (make-hash-table :test 'eq))
+          (pi-deck-detached--calls nil)
+          (pi-deck-detached--stop-callback nil)
+          (pi-deck--agents (make-hash-table :test 'eq))
+          (pi-deck-spaces nil) (pi-deck--layouts nil) (pi-deck--last-space nil)
+          (pi-deck--finished-workers nil) (pi-deck--state-claimed t)
+          (pi-deck--state-owner "/private/test-server") (pi-deck--state-backup-pending nil)
+          (pi-deck--last-saved nil) (pi-deck--restoring nil) (pi-deck-restore-interval 0)
+          (pi-deck--restore-failures nil) (pi-deck--restored-buffers nil) (pi-deck--restored-links nil)
+          (pi-deck--pending-reveal nil) (pi-deck--saved-structure nil)
+          (pi-deck-state-file (expand-file-name "state.eld" directory))
+          (pi-deck-preferences-file (expand-file-name "preferences.eld" directory))
+          (pi-deck-save-delay nil) (pi-deck-sidebar nil) (pi-deck-new-space-action 'dired)
+          (kill-buffer-query-functions nil))
+     (cl-letf (((symbol-function 'pilish-session-runtime)
+                (lambda (buffer) (pi-deck-detached--value buffer :runtime)))
+               ((symbol-function 'pilish-session-desktop-state) #'pi-deck-detached--desktop)
+               ((symbol-function 'pilish-restore-session-state) #'pi-deck-detached--restore)
+               ((symbol-function 'pilish-session-directory)
+                (lambda (buffer) (pi-deck-detached--value buffer :directory)))
+               ((symbol-function 'pilish-session-name)
+                (lambda (buffer) (pi-deck-detached--value buffer :name)))
+               ((symbol-function 'pilish-session-title) (lambda (_) nil))
+               ((symbol-function 'pilish-session-file)
+                (lambda (buffer) (pi-deck-detached--value buffer :session-file)))
+               ((symbol-function 'pilish-session-input-buffer)
+                (lambda (buffer) (pi-deck-detached--value buffer :input)))
+               ((symbol-function 'pilish-session-process) (lambda (_) nil))
+               ((symbol-function 'pilish-session-model) (lambda (_) nil))
+               ((symbol-function 'pilish-session-context-usage) (lambda (_) nil))
+               ((symbol-function 'pilish-session-pending-dialogs) (lambda (_) nil))
+               ((symbol-function 'pilish-session-extension-status) (lambda (&rest _) nil))
+               ((symbol-function 'pilish-session-busy-p) (lambda (_) nil))
+               ((symbol-function 'pilish-disconnect-session) #'pi-deck-detached--close)
+               ((symbol-function 'pilish-close-session)
+                (lambda (&rest _) (ert-fail "View cleanup requested another global close")))
+               ((symbol-function 'pilish-list-runtimes) (lambda () nil))
+               ((symbol-function 'pilish-attach-runtime)
+                (lambda (runtime &optional _name)
+                  (push (list 'attach runtime) pi-deck-detached--calls)
+                  (pi-deck-detached--view
+                   (list :directory directory :name "attached" :runtime runtime
+                         :session-file (plist-get runtime :session-file)))))
+               ((symbol-function 'pilish-reconnect-runtime)
+                (lambda (buffer &optional callback)
+                  (push (list 'reconnect buffer) pi-deck-detached--calls)
+                  (when callback (funcall callback nil))))
+               ((symbol-function 'pilish-resume-stopped-session)
+                (lambda (buffer &optional callback)
+                  (push (list 'resume buffer) pi-deck-detached--calls)
+                  (when callback (funcall callback nil))))
+               ((symbol-function 'pilish-stop-runtime)
+                (lambda (buffer &optional callback)
+                  (push (list 'stop buffer) pi-deck-detached--calls)
+                  (setq pi-deck-detached--stop-callback callback)))
+               ((symbol-function 'pilish-start-session)
+                (lambda (&rest _) (ert-fail "Desktop restore must not start Pi")))
+               ((symbol-function 'pi-deck--client-frames) (lambda () nil))
+               ((symbol-function 'pi-deck-reveal) #'identity)
+               ((symbol-function 'pi-deck--remove-views) #'ignore))
+       (unwind-protect
+           (progn (pi-deck-mode 1) ,@body)
+         (pi-deck-mode -1)
+         (maphash (lambda (buffer state)
+                    (when (buffer-live-p (plist-get state :input)) (kill-buffer (plist-get state :input)))
+                    (when (buffer-live-p buffer) (kill-buffer buffer)))
+                  pi-deck-detached--views)
+         (dolist (buffer (buffer-list))
+           (when (eq (buffer-local-value 'major-mode buffer) 'pi-deck-stopped-shell-mode)
+             (kill-buffer buffer)))
+         (when pi-deck--update-timer (cancel-timer pi-deck--update-timer) (setq pi-deck--update-timer nil))
+         (delete-directory directory t)))))
+
+(defun pi-deck-detached--runtime (&optional id file)
+  (list :protocol 2 :mux-id (or id "runtime-a") :socket "/private/runtime.sock"
+        :pid 100 :pi-pid 101 :pi-start-time "identity" :pi-boot-id "boot"
+        :session-file (or file "/private/old.jsonl") :state "committed"))
+
+(defun pi-deck-detached--agent (directory &optional name runtime)
+  (pi-deck--track
+   (pi-deck-detached--view (list :directory directory :name (or name "one")
+                                :session-file (or (plist-get runtime :session-file) "/private/saved.jsonl")
+                                :runtime runtime :draft "unsent" :images '("synthetic-image")
+                                :followups '("not delivered")
+                                :quarantine '((:session-file "old" :draft "recover"))
+                                :leaf-id "old-leaf")) 'pi))
+
+(ert-deftest pi-deck-detached-save-and-restore-complete-public-view-and-parent-state ()
+  (pi-deck-detached--with-desktop
+    (let* ((root (pi-deck-detached--agent directory "root" (pi-deck-detached--runtime)))
+           (child (pi-deck-detached--agent directory "child" (pi-deck-detached--runtime "child")))
+           (input (pilish-session-input-buffer (pi-deck-agent-buffer root))))
+      (setf (pi-deck-agent-target child) "task" (pi-deck-agent-placement child) "worker"
+            (pi-deck-agent-parent child) (pi-deck-agent-buffer root))
+      (with-current-buffer input (erase-buffer) (insert "edited draft"))
+      (pi-deck-save-state)
+      (let* ((state (pi-deck-read-state)) (records (plist-get state :agents)))
+        (should (equal (mapcar (lambda (record) (plist-get record :desktop-state)) records)
+                       (mapcar #'pilish-session-desktop-state
+                               (list (pi-deck-agent-buffer root) (pi-deck-agent-buffer child)))))
+        (should (equal (plist-get (cadr records) :parent) (buffer-name (pi-deck-agent-buffer root))))
+        (setq pi-deck--agents (make-hash-table :test 'eq) pi-deck-detached--calls nil)
+        (pi-deck-restore-state)
+        (should (equal (reverse pi-deck-detached--calls)
+                       (mapcar (lambda (record) (list 'restore (plist-get record :desktop-state))) records)))
+        (let ((restored (pi-deck-agents)))
+          (should (= (length restored) 2))
+          (should (eq (pi-deck-agent-parent (cadr restored)) (pi-deck-agent-buffer (car restored)))))))))
+
+(ert-deftest pi-deck-detached-authoritatively-closed-restore-record-is-omitted ()
+  (pi-deck-detached--with-desktop
+    (let* ((buffer (generate-new-buffer "closed-saved-buffer"))
+           (name (buffer-name buffer))
+           (record (list :kind 'pi :buffer name
+                         :desktop-state (list :directory directory :runtime (pi-deck-detached--runtime)))))
+      (unwind-protect
+          (save-window-excursion
+            (switch-to-buffer buffer)
+            (setq pi-deck--layouts (list (cons "project" (window-state-get (selected-window) t))))
+            (should (member name (window-state-buffers (cdar pi-deck--layouts))))
+            (cl-letf (((symbol-function 'pilish-restore-session-state) (lambda (_state) nil)))
+              (should-not (pi-deck--restore-agent record)))
+            (should-not pi-deck--layouts)
+            (should-not pi-deck--restore-failures)
+            (should-not (plist-get (pi-deck-state) :agents))
+            (should-not (plist-get (pi-deck-state) :unrestored)))
+        (kill-buffer buffer)))))
+
+(ert-deftest pi-deck-detached-managed-shell-uses-command-state-not-wrapper-liveness ()
+  (pi-deck-detached--with-desktop
+    (let* ((buffer (generate-new-buffer " *deck-panel-wrapper*"))
+           (process (make-pipe-process :name "deck-panel-wrapper" :buffer buffer :noquery t))
+           (agent (pi-deck-agent--make :buffer buffer :kind 'shell))
+           (state "held"))
+      (unwind-protect
+          (cl-letf (((symbol-function 'pi-orchestration-panel-command-state)
+                     (lambda (queried) (should (eq queried buffer)) state)))
+            (dolist (case '(("held" unknown nil "waiting for activation")
+                            ("running" working nil nil)
+                            ("exited" idle t "exited")
+                            ("unknown" unknown nil "command state unknown")))
+              (setq state (nth 0 case))
+              (should (process-live-p process))
+              (should (eq (pi-deck--shell-state buffer) (nth 1 case)))
+              (should (equal (pi-deck-agent-finished-shell-p agent) (nth 2 case)))
+              (should (equal (pi-deck-agent-detail agent) (nth 3 case))))
+            ;; Prompt marks still describe an interactive managed shell's wait.
+            (setq state "running")
+            (with-current-buffer buffer (setq pi-deck--shell-phase 'prompt))
+            (should (eq (pi-deck--shell-state buffer) 'idle))
+            ;; Neither lost command evidence nor wrapper death proves completion.
+            (delete-process process)
+            (setq state "unknown")
+            (should-not (pi-deck-agent-finished-shell-p agent))
+            (should (eq (pi-deck--shell-state buffer) 'unknown))
+            ;; Ordinary unmanaged terminals retain their process-based behavior.
+            (setq state nil)
+            (should (pi-deck-agent-finished-shell-p agent))
+            (should (eq (pi-deck--shell-state buffer) 'idle)))
+        (when (process-live-p process) (delete-process process))
+        (kill-buffer buffer)))))
+
+(ert-deftest pi-deck-detached-native-shell-command-is-not-reexecuted ()
+  (pi-deck-detached--with-desktop
+    (cl-letf (((symbol-function 'pi-deck-start-shell)
+               (lambda (&rest _) (ert-fail "Restoration executed a command"))))
+      (let* ((marker (expand-file-name "executed" directory))
+             (agent (pi-deck--restore-agent
+                     (list :kind 'shell :buffer "saved-shell" :dir directory
+                           :command (list "touch" marker)))))
+        (should (eq (buffer-local-value 'major-mode (pi-deck-agent-buffer agent)) 'pi-deck-stopped-shell-mode))
+        (should-not (file-exists-p marker))
+        (should (string-match-p "stopped terminal" (pi-deck-agent-detail agent)))))))
+
+(ert-deftest pi-deck-detached-restored-workers-keep-parent-links-without-host ()
+  (pi-deck-detached--with-desktop
+    (let* ((root (pi-deck--restore-agent (list :kind 'pi :buffer "saved-root"
+                                             :desktop-state (list :directory directory :name "root"))))
+           (child (pi-deck--restore-agent (list :kind 'pi :buffer "saved-child" :parent "saved-root"
+                                              :target "task" :placement "worker"
+                                              :desktop-state (list :directory directory :name "child")))))
+      (pi-deck--restore-next nil 0 2 nil)
+      (pi-deck-refresh)
+      (should (eq (pi-deck-agent-parent child) (pi-deck-agent-buffer root)))
+      (should (equal (pi-deck-agent-target child) "task"))
+      (should-error (pi-deck-resume-agent child) :type 'user-error))))
+
+(ert-deftest pi-deck-detached-discovery-deduplicates-on-runtime-not-file ()
+  (pi-deck-detached--with-desktop
+    (let* ((runtime (pi-deck-detached--runtime))
+           (first (pi-deck-attach-runtime runtime))
+           (changed (plist-put (copy-tree runtime) :session-file "changed.jsonl")))
+      (should (eq first (pi-deck-attach-runtime changed)))
+      (should (= (length (seq-filter (lambda (call) (eq (car call) 'attach)) pi-deck-detached--calls)) 1)))))
+
+(ert-deftest pi-deck-detached-duplicate-saved-runtime-has-one-view ()
+  (pi-deck-detached--with-desktop
+    (let* ((state (list :directory directory :runtime (pi-deck-detached--runtime)))
+           (first (pi-deck--restore-agent (list :kind 'pi :buffer "old-one" :desktop-state state)))
+           (second (pi-deck--restore-agent (list :kind 'pi :buffer "old-two" :desktop-state state))))
+      (should (eq first second))
+      (should (= (length (pi-deck-agents)) 1)))))
+
+(ert-deftest pi-deck-detached-layout-remaps-buffer-names-only ()
+  (pi-deck-detached--with-desktop
+    (setq pi-deck--layouts '(("space" (leaf (buffer "old" (selected . t)) (other . "old")))))
+    (pi-deck--remap-layout-buffers '(("old" . "new")))
+    (should (equal pi-deck--layouts '(("space" (leaf (buffer "new" (selected . t)) (other . "old"))))))))
+
+(ert-deftest pi-deck-detached-close-idle-working-and-blocked-without-confirmation ()
+  (pi-deck-detached--with-desktop
+    (dolist (state '(idle working blocked))
+      (let* ((agent (pi-deck-detached--agent directory nil (pi-deck-detached--runtime)))
+             (buffer (pi-deck-agent-buffer agent)))
+        (setq pi-deck-detached--calls nil)
+        (setf (pi-deck-agent-state agent) state)
+        (cl-letf (((symbol-function 'y-or-n-p) (lambda (&rest _) (ert-fail "Close asked")))
+                  ((symbol-function 'yes-or-no-p) (lambda (&rest _) (ert-fail "Close asked")))
+                  ((symbol-function 'x-popup-dialog) (lambda (&rest _) (ert-fail "Close asked"))))
+          (pi-deck-close-agent agent))
+        (should (buffer-live-p buffer))
+        (should (pi-deck-agent buffer))
+        (funcall pi-deck-detached--stop-callback nil)
+        (funcall pi-deck-detached--stop-callback nil)
+        (should-not (buffer-live-p buffer))
+        (should-not (pi-deck-agent buffer))
+        (should (= (length (seq-filter (lambda (call) (eq (car call) 'disconnect))
+                                       pi-deck-detached--calls)) 1))))))
+
+(ert-deftest pi-deck-detached-stop-failure-retains-view-and-unsent-draft ()
+  (pi-deck-detached--with-desktop
+    (let* ((agent (pi-deck-detached--agent directory nil (pi-deck-detached--runtime)))
+           (buffer (pi-deck-agent-buffer agent)))
+      (pi-deck-stop-agent agent)
+      (funcall pi-deck-detached--stop-callback "Lost stop acknowledgement")
+      (should (buffer-live-p buffer))
+      (should (pi-deck-agent buffer))
+      (should (equal (plist-get (pilish-session-desktop-state buffer) :draft) "unsent"))
+      (should (memq agent (pi-deck-agents))))))
+
+(ert-deftest pi-deck-detached-task-stop-requires-worker-owner-not-root-or-identity-free-view ()
+  (pi-deck-detached--with-desktop
+    (dolist (runtime (list (pi-deck-detached--runtime)
+                           '(:protocol 2 :placement "worker" :state "stopped")
+                           '(:protocol 2 :placement "worker" :mux-id "" :state "stopped")))
+      (let ((agent (pi-deck-detached--agent directory nil runtime)) error)
+        (setf (pi-deck-agent-target agent) "task" (pi-deck-agent-placement agent) "worker")
+        (cl-letf (((symbol-function 'pi-orchestration-stop-target)
+                   (lambda (&rest _) (ert-fail "Invalid worker identity reached target control")))
+                  ((symbol-function 'pilish-close-session)
+                   (lambda (&rest _) (ert-fail "Invalid worker identity reached view disposal"))))
+          (pi-deck-stop-agent agent (lambda (failure) (setq error failure))))
+        (should (string-match-p "owning runtime identity is unavailable" error))
+        (should (buffer-live-p (pi-deck-agent-buffer agent)))
+        (should-not (assq 'stop pi-deck-detached--calls))))))
+
+(ert-deftest pi-deck-detached-identity-free-stopped-view-closes-through-pilish-without-stop ()
+  (pi-deck-detached--with-desktop
+    (let* ((agent (pi-deck-detached--agent directory nil '(:protocol 2 :state "stopped")))
+           (buffer (pi-deck-agent-buffer agent))
+           results)
+      (cl-letf (((symbol-function 'pilish-close-session)
+                 (lambda (chat callback)
+                   (push (list 'close chat) pi-deck-detached--calls)
+                   ;; Pilish retirement: closed observers, then its own disposal.
+                   (run-hook-with-args 'pilish-session-closed-functions chat)
+                   (kill-buffer (pi-deck-detached--value chat :input))
+                   (kill-buffer chat)
+                   (funcall callback nil))))
+        (pi-deck-stop-agent agent (lambda (error) (push error results))))
+      (should (equal results '(nil)))
+      (should (equal (assq 'close pi-deck-detached--calls) (list 'close buffer)))
+      (should-not (assq 'stop pi-deck-detached--calls))
+      (should-not (assq 'disconnect pi-deck-detached--calls))
+      (should-not (buffer-live-p buffer))
+      (should-not (pi-deck-agent buffer))
+      (should-not (pi-deck-agents t)))))
+
+(ert-deftest pi-deck-detached-fork-with-unregistered-target-stops-its-runtime ()
+  (pi-deck-detached--with-desktop
+    (let* ((runtime (plist-put (pi-deck-detached--runtime "fork-runtime") :placement "interactive-fork"))
+           (agent (pi-deck-detached--agent directory "fork" runtime))
+           (buffer (pi-deck-agent-buffer agent))
+           results)
+      ;; A frontend restart forgot the target; the runtime identity remains.
+      (setf (pi-deck-agent-target agent) "forgotten-target"
+            (pi-deck-agent-placement agent) "interactive-fork")
+      (cl-letf (((symbol-function 'pi-orchestration-targets) (lambda () nil))
+                ((symbol-function 'pi-orchestration-stop-target)
+                 (lambda (&rest _) (ert-fail "Unregistered target reached orchestration"))))
+        (pi-deck-stop-agent agent (lambda (error) (push error results)))
+        (should (equal (assq 'stop pi-deck-detached--calls) (list 'stop buffer)))
+        (should-not results)
+        (should (buffer-live-p buffer))
+        (funcall pi-deck-detached--stop-callback nil))
+      (should (equal results '(nil)))
+      (should-not (buffer-live-p buffer))
+      (should-not (pi-deck-agent buffer)))))
+
+(ert-deftest pi-deck-detached-registered-and-shell-targets-close-through-orchestration ()
+  (pi-deck-detached--with-desktop
+    (let* ((runtime (plist-put (pi-deck-detached--runtime "fork-runtime") :placement "interactive-fork"))
+           (fork (pi-deck-detached--agent directory "fork" runtime))
+           (terminal (generate-new-buffer " *deck-missing-panel*"))
+           (panel (pi-deck-agent--make :buffer terminal :kind 'shell :target "missing-panel"))
+           stopped results)
+      (setf (pi-deck-agent-target fork) "fork-target"
+            (pi-deck-agent-placement fork) "interactive-fork")
+      ;; A tracked panel whose Close failed is listed again.
+      (puthash terminal panel pi-deck--agents)
+      (unwind-protect
+          (cl-letf (((symbol-function 'pi-orchestration-targets)
+                     (lambda () (list (list :id "fork-target" :kind "pi" :placement "interactive-fork"
+                                            :buffer (pi-deck-agent-buffer fork)))))
+                    ((symbol-function 'pi-orchestration-stop-target)
+                     (lambda (id callback)
+                       (push id stopped)
+                       (funcall callback (unless (equal id "fork-target")
+                                           (format "Missing orchestration target: %s" id)))))
+                    ((symbol-function 'message) #'ignore))
+            (pi-deck-stop-agent fork (lambda (error) (push error results)))
+            (pi-deck-stop-agent panel (lambda (error) (push error results)))
+            (should (equal stopped '("missing-panel" "fork-target")))
+            (should (equal results '("Missing orchestration target: missing-panel" nil)))
+            (should-not (assq 'stop pi-deck-detached--calls))
+            (should-not (buffer-live-p (pi-deck-agent-buffer fork)))
+            (should (buffer-live-p terminal))
+            (should-not (pi-deck-agent-closing panel)))
+        (kill-buffer terminal)))))
+
+(ert-deftest pi-deck-detached-close-space-waits-for-global-stop ()
+  (pi-deck-detached--with-desktop
+    (pi-deck--register-space "project" directory)
+    (let ((agent (pi-deck-detached--agent directory nil (pi-deck-detached--runtime))))
+      (setf (pi-deck-agent-assigned-space agent) "project")
+      (pi-deck-close-space "project")
+      (should (pi-deck-space "project"))
+      (should (buffer-live-p (pi-deck-agent-buffer agent)))
+      (should (assq 'stop pi-deck-detached--calls))
+      (funcall pi-deck-detached--stop-callback nil)
+      (should-not (pi-deck-space "project"))
+      (should-not (buffer-live-p (pi-deck-agent-buffer agent))))))
+
+(ert-deftest pi-deck-detached-failed-space-stop-preserves-space ()
+  (pi-deck-detached--with-desktop
+    (pi-deck--register-space "project" directory)
+    (let ((agent (pi-deck-detached--agent directory nil (pi-deck-detached--runtime))))
+      (setf (pi-deck-agent-assigned-space agent) "project")
+      (pi-deck-close-space "project")
+      (funcall pi-deck-detached--stop-callback "uncertain")
+      (should (pi-deck-space "project"))
+      (should (buffer-live-p (pi-deck-agent-buffer agent))))))
+
+(ert-deftest pi-deck-detached-panel-close-awaits-terminal-callback-not-dispatch ()
+  (pi-deck-detached--with-desktop
+    (dolist (placement '(nil "worker"))
+      (let* ((agent (pi-deck-detached--agent directory nil (pi-deck-detached--runtime)))
+             (buffer (pi-deck-agent-buffer agent)) pending result)
+        (setf (pi-deck-agent-kind agent) 'shell
+              (pi-deck-agent-target agent) "owned-target"
+              (pi-deck-agent-placement agent) placement)
+        (cl-letf (((symbol-function 'pi-orchestration-stop-target)
+                   (lambda (id callback)
+                     (should (equal id "owned-target"))
+                     (setq pending callback)
+                     t)))
+          (pi-deck-stop-agent agent (lambda (error) (push error result))))
+        (should (buffer-live-p buffer))
+        (should (pi-deck-agent buffer))
+        (should-not result)
+        (should-not (assq 'stop pi-deck-detached--calls))
+        (funcall pending "Cancellation outcome uncertain")
+        (should (equal result '("Cancellation outcome uncertain")))
+        (should (buffer-live-p buffer))
+        (should (pi-deck-agent buffer))
+        (setq result nil)
+        (cl-letf (((symbol-function 'pi-orchestration-stop-target)
+                   (lambda (_id callback) (setq pending callback))))
+          (pi-deck-stop-agent agent (lambda (error) (push error result))))
+        (funcall pending nil)
+        (funcall pending nil)
+        (should (equal result '(nil)))
+        (should-not (buffer-live-p buffer))
+        (should-not (pi-deck-agent buffer))))))
+
+(ert-deftest pi-deck-detached-worker-close-awaits-owning-pilish-not-local-target ()
+  (pi-deck-detached--with-desktop
+    (dolist (target '(nil "lost-target"))
+      (let* ((runtime (plist-put (pi-deck-detached--runtime) :placement "worker"))
+             (agent (pi-deck-detached--agent directory nil runtime))
+             (buffer (pi-deck-agent-buffer agent)) pending results)
+        (setf (pi-deck-agent-target agent) target
+              (pi-deck-agent-placement agent) "worker")
+        (cl-letf (((symbol-function 'pi-orchestration-stop-target)
+                   (lambda (&rest _) (ert-fail "Worker Close used the local target registry")))
+                  ((symbol-function 'pilish-close-session)
+                   (lambda (chat callback)
+                     (should (eq chat buffer)) (setq pending callback) t)))
+          (pi-deck-stop-agent agent (lambda (failure) (push failure results)))
+          (should-not results)
+          (should (pi-deck-agent buffer))
+          (should (buffer-live-p buffer))
+          (funcall pending "Task completion is unknown")
+          (should (equal results '("Task completion is unknown")))
+          (should (equal (plist-get (pilish-session-desktop-state buffer) :draft) "unsent"))
+          (pi-deck-stop-agent agent (lambda (failure) (push failure results)))
+          (funcall pending nil)
+          (funcall pending nil)
+          (should (equal results '(nil "Task completion is unknown")))
+          (should-not (pi-deck-agent buffer))
+          (should-not (buffer-live-p buffer))
+          (should-not (assq 'stop pi-deck-detached--calls)))))))
+
+(ert-deftest pi-deck-detached-worker-close-crosses-owning-task-evidence-boundary ()
+  ;; Real public Pilish restore/Close and task-evidence validation, no live
+  ;; runtime or private Pilish state. The synthetic CLI is read-only; /bin/false
+  ;; is the only configured launch/discovery executable, so no Pi can start.
+  (let* ((directory (file-name-as-directory (make-temp-file "deck-task-close-" t)))
+         (evidence (expand-file-name "task.json" directory))
+         (program (expand-file-name "task-status" directory))
+         (pi-deck--agents (make-hash-table :test 'eq))
+         (pi-deck--finished-workers nil) (pi-deck--layouts nil)
+         (pi-deck--pending-reveal nil) (pi-deck-save-delay nil)
+         (pi-deck--state-owner nil) (pi-deck--update-timer nil)
+         (pilish-runtime-mode 'detached)
+         (pilish-runtime-pi-executable "/bin/false")
+         (pilish-runtime-pimux-executable "/bin/false")
+         (pilish-runtime-task-status-executable program)
+         (pilish-session-closed-functions '(pi-deck--on-session-terminated))
+         (kill-buffer-query-functions nil) buffers)
+    (unwind-protect
+        (progn
+          (with-temp-file program
+            (insert "#!/bin/sh\nexec /bin/cat " (shell-quote-argument evidence) "\n"))
+          (set-file-modes program #o700)
+          (dolist (case '(complete pending failed missing changed))
+            (let* ((id (symbol-name case))
+                   (runtime (list :protocol 2 :mux-id id :placement "worker"
+                                  :socket (expand-file-name "mux/worker.sock" directory)
+                                  :pid 999999991 :owner-start-time "owner" :owner-boot-id "boot"
+                                  :pi-pid 999999992 :pi-start-time "child" :pi-boot-id "boot"
+                                  :state "stopped" :terminal-receipt
+                                  (list :muxId id :state "stopped")))
+                   (record (list :schema 1 :muxId id :state "pending"
+                                 :worker '(:pid 999999992 :startTime "child" :bootId "boot")
+                                 :parent '(:process (:pid 999999993 :startTime "parent" :bootId "boot")
+                                           :taskId "task")
+                                 :leaseFile (expand-file-name "lease.json" directory)))
+                   chat agent results)
+              (with-temp-file evidence (insert (json-serialize record)))
+              (setq chat (pilish-restore-session-state
+                          (list :directory directory :name (symbol-name case)
+                                :session-file (expand-file-name "worker.jsonl" directory)
+                                :runtime runtime :draft "keep this draft")))
+              (should (buffer-live-p chat))
+              (push chat buffers)
+              (should-not (process-live-p (pilish-session-process chat)))
+              (setq agent (pi-deck--track chat 'pi))
+              ;; Restore may retain a target ID, but the local registry is gone.
+              (setf (pi-deck-agent-placement agent) "worker"
+                    (pi-deck-agent-target agent) "missing-local-target")
+              (pcase case
+                ('complete (setq record (plist-put record :state "complete")))
+                ('failed (setq record (plist-put record :state "failed")
+                               record (plist-put record :error "Parent cleanup failed")))
+                ('changed (setq record (plist-put record :state "complete")
+                                record (plist-put record :worker
+                                                  '(:pid 999999992 :startTime "replacement" :bootId "boot")))))
+              (if (eq case 'missing) (delete-file evidence)
+                (with-temp-file evidence (insert (json-serialize record))))
+              (cl-letf (((symbol-function 'pi-orchestration-stop-target)
+                         (lambda (&rest _) (ert-fail "Worker Close consulted the lost registry")))
+                        ((symbol-function 'pilish-stop-runtime)
+                         (lambda (&rest _) (ert-fail "Worker Close tried root Stop")))
+                        ((symbol-function 'pilish-submit-prompt)
+                         (lambda (&rest _) (ert-fail "Disconnected worker Close submitted input")))
+                        ((symbol-function 'pi-deck--client-frames) (lambda () nil)))
+                (pi-deck-stop-agent agent (lambda (failure) (push failure results))))
+              (should (= (length results) 1))
+              (if (eq case 'complete)
+                  (progn (should-not (car results))
+                         (should-not (buffer-live-p chat))
+                         (should-not (pi-deck-agent chat)))
+                (should (stringp (car results)))
+                (should (buffer-live-p chat))
+                (should (pi-deck-agent chat))
+                (should (equal (plist-get (pilish-session-desktop-state chat) :draft)
+                               "keep this draft"))))))
+      (dolist (buffer buffers)
+        (when (buffer-live-p buffer) (pilish-disconnect-session buffer)))
+      (when pi-deck--update-timer (cancel-timer pi-deck--update-timer))
+      (delete-directory directory t))))
+
+(ert-deftest pi-deck-detached-remote-close-and-local-ack-race-is-idempotent ()
+  (pi-deck-detached--with-desktop
+    (let* ((agent (pi-deck-detached--agent directory nil (pi-deck-detached--runtime)))
+           (buffer (pi-deck-agent-buffer agent)) results)
+      (pi-deck-stop-agent agent (lambda (error) (push error results)))
+      ;; Pilish emits this only for authoritative termination, then disposes.
+      (run-hook-with-args 'pilish-session-closed-functions buffer)
+      (run-hook-with-args 'pilish-session-closed-functions buffer)
+      (should-not (pi-deck-agent buffer))
+      (should-not (plist-get (pi-deck-state) :agents))
+      (pi-deck-detached--close buffer)
+      (funcall pi-deck-detached--stop-callback nil)
+      (funcall pi-deck-detached--stop-callback nil)
+      (should (equal results '(nil)))
+      (should (= (length (seq-filter (lambda (call) (eq (car call) 'disconnect))
+                                     pi-deck-detached--calls)) 1))
+      (should (= (length (seq-filter (lambda (call) (eq (car call) 'stop))
+                                     pi-deck-detached--calls)) 1)))))
+
+(ert-deftest pi-deck-detached-terminal-observer-error-is-not-reported-as-success ()
+  (pi-deck-detached--with-desktop
+    (let* ((agent (pi-deck-detached--agent directory nil (pi-deck-detached--runtime)))
+           (buffer (pi-deck-agent-buffer agent)) results)
+      (pi-deck-stop-agent agent (lambda (error) (push error results)))
+      ;; Authoritative termination removes active UI even if another owning
+      ;; observer/cleanup subsequently fails. Its callback error must survive.
+      (run-hook-with-args 'pilish-session-closed-functions buffer)
+      (pi-deck-detached--close buffer)
+      (funcall pi-deck-detached--stop-callback "Close observer: failed")
+      (funcall pi-deck-detached--stop-callback nil)
+      (should (equal results '("Close observer: failed")))
+      (should-not (pi-deck-agent buffer))
+      (should-not (plist-get (pi-deck-state) :agents))
+      (should (= (length (seq-filter (lambda (call) (eq (car call) 'stop))
+                                     pi-deck-detached--calls)) 1)))))
+
+(ert-deftest pi-deck-detached-close-children-before-parent-but-not-independent-fork ()
+  (pi-deck-detached--with-desktop
+    (let* ((root (pi-deck-detached--agent directory "root" (pi-deck-detached--runtime)))
+           (child (pi-deck-detached--agent directory "child" (pi-deck-detached--runtime "child")))
+           (nested (pi-deck-detached--agent directory "nested" (pi-deck-detached--runtime "nested")))
+           (fork (pi-deck-detached--agent directory "fork" (pi-deck-detached--runtime "fork"))))
+      (setf (pi-deck-agent-parent child) (pi-deck-agent-buffer root)
+            (pi-deck-agent-target child) "child" (pi-deck-agent-placement child) "worker"
+            (pi-deck-agent-parent nested) (pi-deck-agent-buffer child)
+            (pi-deck-agent-parent fork) (pi-deck-agent-buffer root)
+            (pi-deck-agent-placement fork) "interactive-fork")
+      (should (equal (pi-deck--with-descendants (list root child nested))
+                     (list nested child root)))
+      (let (order)
+        (cl-letf (((symbol-function 'pi-deck-stop-agent)
+                   (lambda (agent callback)
+                     (push agent order)
+                     (should (buffer-live-p (pi-deck-agent-buffer root)))
+                     (funcall callback nil))))
+          (pi-deck-close-agent root))
+        (should (equal (nreverse order) (list nested child root)))))))
+
+(ert-deftest pi-deck-detached-identity-free-stopped-view-offers-resume-not-reconnect ()
+  (pi-deck-detached--with-desktop
+    (let* ((agent (pi-deck-detached--agent directory nil '(:protocol 2 :state "stopped")))
+           (menu (pi-deck-agent-menu agent))
+           labels)
+      (map-keymap (lambda (_key item)
+                   (when (eq (car-safe item) 'menu-item) (push (nth 1 item) labels))) menu)
+      (should (member "Resume stopped view explicitly" labels))
+      (should-not (member "Reconnect existing runtime (no restart)" labels))
+      (should-error (pi-deck-reconnect-agent agent) :type 'user-error)
+      (should-not pi-deck-detached--calls)
+      (should (string-match-p "stopped view" (pi-deck-agent-detail agent)))
+      (pi-deck-resume-agent agent)
+      (should (assq 'resume pi-deck-detached--calls)))))
+
+(ert-deftest pi-deck-detached-launch-in-flight-is-starting-not-disconnected ()
+  (pi-deck-detached--with-desktop
+    (let* ((agent (pi-deck-detached--agent
+                   directory "launching" '(:protocol 2 :state "starting" :mux-id "new")))
+           (pending t)
+           (labels (lambda ()
+                     (let (labels)
+                       (map-keymap (lambda (_key item)
+                                     (when (eq (car-safe item) 'menu-item) (push (nth 1 item) labels)))
+                                   (pi-deck-agent-menu agent))
+                       labels))))
+      (cl-letf (((symbol-function 'pilish-session-runtime-pending-p)
+                 (lambda (buffer) (and pending (eq buffer (pi-deck-agent-buffer agent))))))
+        ;; The launch or its post-commit discovery runs: nothing to recover yet.
+        (should (equal (pi-deck-agent-detail agent) "starting"))
+        (should-not (member "Reconnect existing runtime (no restart)" (funcall labels)))
+        (should-not (member "Resume stopped view explicitly" (funcall labels)))
+        ;; A service successor resolution reports synchronizing.
+        (puthash (pi-deck-agent-buffer agent)
+                 (plist-put (gethash (pi-deck-agent-buffer agent) pi-deck-detached--views)
+                            :runtime '(:protocol 2 :state "synchronizing" :mux-id "new"))
+                 pi-deck-detached--views)
+        (should (equal (pi-deck-agent-detail agent) "connecting"))
+        ;; A saved starting record with nothing in flight is an interrupted launch.
+        (setq pending nil)
+        (puthash (pi-deck-agent-buffer agent)
+                 (plist-put (gethash (pi-deck-agent-buffer agent) pi-deck-detached--views)
+                            :runtime '(:protocol 2 :state "starting" :mux-id "new"))
+                 pi-deck-detached--views)
+        (should (string-match-p "\\`disconnected; Reconnect" (pi-deck-agent-detail agent)))
+        (should (member "Reconnect existing runtime (no restart)" (funcall labels)))
+        (should (member "Resume stopped view explicitly" (funcall labels)))))))
+
+(ert-deftest pi-deck-detached-disable-removes-draft-hook-not-agent ()
+  (pi-deck-detached--with-desktop
+    (let* ((agent (pi-deck-detached--agent directory nil (pi-deck-detached--runtime)))
+           (buffer (pi-deck-agent-buffer agent)) (input (pilish-session-input-buffer buffer)))
+      (pi-deck-refresh-agent buffer)
+      (should (memq #'pi-deck-schedule-save (buffer-local-value 'after-change-functions input)))
+      (pi-deck-mode -1)
+      (should-not (memq #'pi-deck-schedule-save (buffer-local-value 'after-change-functions input)))
+      (should (buffer-live-p buffer))
+      (should-not (assq 'stop pi-deck-detached--calls)))))
+
+(ert-deftest pi-deck-detached-unknown-state-version-refuses-no-launch ()
+  (pi-deck-detached--with-desktop
+    (with-temp-file pi-deck-state-file (prin1 '(:version 99) (current-buffer)))
+    (should-error (pi-deck-restore-state) :type 'user-error)
+    (should-not pi-deck-detached--calls)))
+
+(ert-deftest pi-deck-detached-saved-name-cannot-adopt-a-different-live-runtime ()
+  (pi-deck-detached--with-desktop
+    (let* ((original (pi-deck-detached--agent directory "existing" (pi-deck-detached--runtime "other")))
+           (buffer (pi-deck-agent-buffer original))
+           (restored (pi-deck--restore-agent
+                      (list :kind 'pi :buffer (buffer-name buffer)
+                            :desktop-state (list :directory directory :name "restored"
+                                                 :runtime (pi-deck-detached--runtime "missing"))))))
+      (should-not (eq original restored))
+      (should (equal (plist-get (pi-deck-agent-runtime original) :mux-id) "other"))
+      (should (equal (plist-get (pi-deck-agent-runtime restored) :mux-id) "missing")))))
+
+(ert-deftest pi-deck-detached-failed-restoration-keeps-recoverable-record ()
+  (pi-deck-detached--with-desktop
+    (let ((record (list :kind 'pi :buffer "retained" :desktop-state
+                        (list :directory directory :draft "must not disappear"))))
+      (cl-letf (((symbol-function 'pilish-restore-session-state)
+                 (lambda (_) (error "Owner cannot be reconciled"))))
+        (should-not (pi-deck--restore-agent record)))
+      (should (equal (plist-get (pi-deck-state) :unrestored) (list record)))
+      (pi-deck-save-state)
+      (should (equal (plist-get (pi-deck-read-state) :unrestored) (list record))))))
+
+(ert-deftest pi-deck-detached-missing-shell-directory-does-not-become-another-directory ()
+  (pi-deck-detached--with-desktop
+    (let* ((missing (expand-file-name "missing/" directory))
+           (agent (pi-deck--restore-agent (list :kind 'shell :buffer "missing-shell"
+                                              :dir missing :command '("echo" "explicit only")))))
+      (should (equal (pi-deck-agent-directory agent) missing))
+      (should (equal (plist-get (pi-deck--agent-record agent nil) :dir) missing))
+      (should-error (pi-deck-resume-agent agent) :type 'user-error))))
+
+(ert-deftest pi-deck-detached-restart-expands-default-tilde-log-before-shell-quoting ()
+  (pi-deck-detached--with-desktop
+    (let ((user-emacs-directory "~/.emacs.d/") operation helper)
+      (should (string-prefix-p "~/" (locate-user-emacs-file "var/pi-deck/restart.log")))
+      (unwind-protect
+          (progn
+            ;; The uncommitted helper must acknowledge even when Emacs's
+            ;; default user directory is tilde-prefixed. Shell quoting a raw
+            ;; tilde used to redirect into a nonexistent relative directory.
+            (setq operation (pi-deck--prepare-restart '("/bin/true")))
+            (should (pi-deck--restart-helper-ready-p operation))
+            (setq helper (with-temp-buffer
+                           (insert-file-contents (expand-file-name "ready" operation))
+                           (string-to-number (buffer-string))))
+            (should (file-exists-p (expand-file-name "var/pi-deck/restart.log" user-emacs-directory))))
+        ;; Never commit/execute the helper; cancellation is deletion of its
+        ;; owned preparation directory, not a signal to a possibly reused PID.
+        (when (and operation (file-directory-p operation)) (delete-directory operation t))
+        (when helper
+          (let ((deadline (+ (float-time) 3)))
+            (while (and (pi-deck--process-start helper) (< (float-time) deadline))
+              (accept-process-output nil 0.02)))
+          (should-not (pi-deck--process-start helper)))))))
+
+(provide 'pi-deck-detached-test)
+;;; pi-deck-detached-test.el ends here

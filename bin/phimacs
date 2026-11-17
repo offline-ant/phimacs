@@ -1,0 +1,262 @@
+#!/usr/bin/env bash
+# phimacs: one command for the Phimacs workspace, here or on another machine.
+# phimacs-client: 1
+#
+#   phimacs [--gui|--no-frame] [-- ARGS]  start or attach pimux and the Emacs
+#                                         daemon, then open a terminal or GUI frame
+#   phimacs setup                         one-time networked preparation
+#   phimacs status [--json]               service, agents, Emacs, setup, shares
+#   phimacs stop [--force]                save and quit Emacs, then stop pimux
+#   phimacs pi [ARGS]                     Pi's terminal UI as a managed agent
+#   phimacs service pimux|emacs           a foreground service for a supervisor
+#   phimacs pimux ARGS                    the pimux client of this checkout
+#   phimacs share                         share this device's microphone, speaker
+#                                         and notifications with PHIMACS_HOST
+#   phimacs client [install [FILE]]       print this script, or install/update
+#                                         it from PHIMACS_HOST
+#
+# PHIMACS_HOST (an SSH destination) runs every command except share and
+# client install on that host; --local ignores it. PHIMACS_REMOTE_COMMAND
+# names phimacs there (default: phimacs). PHIMACS_SHARE=1 also shares this
+# device for the duration of a remote frame or pi session.
+# Local commands need the checkout around this script, Node and npm-built packages.
+set -u
+
+self=$(readlink -f -- "${BASH_SOURCE[0]}")
+die() { printf 'phimacs: %s\n' "$*" >&2; exit 1; }
+
+local_only=
+if [ "${1:-}" = --local ]; then local_only=1; shift; fi
+host=${PHIMACS_HOST:-}
+remote_command=${PHIMACS_REMOTE_COMMAND:-phimacs}
+client_state=
+case $host in -*) die "PHIMACS_HOST must be an SSH destination, not an option: $host" ;; esac
+
+sh_quote() { printf "'%s'" "${1//\'/\'\\\'\'}"; }
+
+# A remote command line that sh, bash and fish login shells all hand verbatim to
+# sh: the real command travels as octal escapes, so the login shell never
+# interprets an argument byte.
+remote_line() {
+	local script word octal
+	script="exec $(sh_quote "$remote_command") --local"
+	for word; do script+=" $(sh_quote "$word")"; done
+	octal=$(printf '%s' "$script" | od -An -v -to1 | tr -s ' \n' '  ')
+	octal=${octal# }
+	octal=${octal% }
+	printf '%s' "sh -c 'eval \"\$(printf \"\\${octal// /\\}\")\"'"
+}
+
+# Own connections, never a ControlMaster's: a multiplexed `ssh -N -R` hands its
+# forwards to the master and exits at once, so the share would see its forwarder end.
+ssh_batch=(-o BatchMode=yes -o ConnectTimeout=10 -o ControlPath=none)
+
+# The newest connection of each kind wins on the host (share protocol 1):
+# ID.mic.sock streams 16 kHz mono s16le until the host closes; ID.speaker.sock
+# plays 44.1 kHz mono s16le to its end; ID.notify.sock shows a title line and body.
+# After its player or notifier exits, a speaker or notify connection answers with
+# one status line, `ok` or `error CODE`, and closes; the host succeeds only on ok.
+# sshd keeps accepting on a forwarded socket whose local listener died, so a dead
+# listener ends the whole connection: its sockets then refuse and the host skips
+# them. The next connection uses a new ID with every listener running.
+share_loop() {
+	local dir device id='' remote_dir forwarder='' sleeper='' exited='' kind
+	local -a kinds=() missing=() forwards=()
+	local -A listener=()
+	((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1] >= 501)) || die "sharing needs bash 5.1 or newer"
+	command -v socat >/dev/null || die "sharing needs socat"
+	if command -v parecord >/dev/null; then kinds+=(mic); else missing+=("mic (parecord)"); fi
+	if command -v pacat >/dev/null; then kinds+=(speaker); else missing+=("speaker (pacat)"); fi
+	if command -v notify-send >/dev/null; then kinds+=(notify); else missing+=("notify (notify-send)"); fi
+	[ ${#missing[@]} -eq 0 ] || printf 'phimacs: not sharing %s: tool not installed\n' "${missing[*]}" >&2
+	[ ${#kinds[@]} -gt 0 ] || die "nothing to share"
+	dir=$(mktemp -d "${TMPDIR:-/tmp}/phimacs-share.XXXXXX") || die "cannot create a share directory"
+	case $dir in *[!A-Za-z0-9_./-]*) rm -rf -- "$dir"; die "unsupported characters in TMPDIR path $dir" ;; esac
+	printf '#!/bin/sh\nexec parecord --raw --format=s16le --rate=16000 --channels=1\n' >"$dir/mic"
+	# Standard output is the connection: only the status line goes there.
+	cat >"$dir/speaker" <<'EOF'
+#!/bin/sh
+pacat --playback --raw --format=s16le --rate=44100 --channels=1 >&2
+status=$?
+if [ "$status" -eq 0 ]; then echo ok; else echo "error $status"; fi
+EOF
+	cat >"$dir/notify" <<'EOF'
+#!/bin/sh
+status=0
+if IFS= read -r title || [ -n "$title" ]; then
+	body=$(cat)
+	notify-send --app-name=Phimacs -- "$title" ${body:+"$body"} >&2 || status=$?
+fi
+if [ "$status" -eq 0 ]; then echo ok; else echo "error $status"; fi
+EOF
+	chmod 700 "$dir/mic" "$dir/speaker" "$dir/notify"
+	release() {
+		[ -n "$id" ] && ssh "${ssh_batch[@]}" -T -- "$host" "$(remote_line share-host release "$id")" </dev/null >/dev/null 2>&1
+		id=
+	}
+	cleanup() {
+		local -a owned=(${forwarder:+"$forwarder"} ${sleeper:+"$sleeper"} "${listener[@]}")
+		if [ ${#owned[@]} -gt 0 ]; then
+			kill "${owned[@]}" 2>/dev/null
+			wait "${owned[@]}" 2>/dev/null
+		fi
+		release
+		rm -rf -- "$dir"
+		[ "${share_pidfile:-}" ] && rm -f -- "$share_pidfile"
+	}
+	# Start each listener that is not running; unlink-early replaces a dead one's socket.
+	# The host settles a speaker or notify delivery when the device closes, so socat
+	# closes only once the player or notifier has finished: -t (seconds after the
+	# host's EOF) merely bounds a hung one, and must not cut long speech short.
+	start_listeners() {
+		local kind
+		for kind in "${kinds[@]}"; do
+			[ -z "${listener[$kind]:-}" ] || continue
+			case $kind in
+			mic) socat "UNIX-LISTEN:$dir/mic.sock,fork,unlink-early,mode=600" "EXEC:$dir/mic" 2>/dev/null & ;;
+			speaker) socat -t 3600 "UNIX-LISTEN:$dir/speaker.sock,fork,unlink-early,mode=600" "EXEC:$dir/speaker" & ;;
+			notify) socat -t 3600 "UNIX-LISTEN:$dir/notify.sock,fork,unlink-early,mode=600" "EXEC:$dir/notify" & ;;
+			esac
+			listener[$kind]=$!
+		done
+	}
+	# Wait until PID or any listener ends (setting exited); forget an ended listener.
+	wait_any() {
+		local kind
+		exited=
+		wait -n -p exited "$1" "${listener[@]}"
+		for kind in "${!listener[@]}"; do
+			[ "${listener[$kind]}" = "$exited" ] || continue
+			unset 'listener[$kind]'
+			printf '%s phimacs: the %s listener stopped\n' "$(date '+%F %T')" "$kind" >&2
+		done
+	}
+	trap cleanup EXIT
+	trap 'exit 0' TERM INT HUP
+	device=$(uname -n)
+	device=${device%%.*}
+	device=$(printf '%s' "$device" | tr -c 'A-Za-z0-9_-' '_')
+	while :; do
+		start_listeners
+		id=${device:-device}-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')
+		if remote_dir=$(ssh "${ssh_batch[@]}" -T -- "$host" "$(remote_line share-host prepare)" </dev/null) \
+			&& [[ $remote_dir == /* && $remote_dir != *$'\n'* ]]; then
+			forwards=()
+			for kind in "${kinds[@]}"; do forwards+=(-R "$remote_dir/$id.$kind.sock:$dir/$kind.sock"); done
+			printf '%s sharing %s as %s:%s/%s.*.sock\n' "$(date '+%F %T')" "${kinds[*]}" "$host" "$remote_dir" "$id"
+			ssh -N "${ssh_batch[@]}" -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+				-o ServerAliveCountMax=2 "${forwards[@]}" -- "$host" </dev/null &
+			forwarder=$!
+			wait_any "$forwarder" # interruptible, unlike a foreground ssh
+			if [ "$exited" != "$forwarder" ]; then
+				kill "$forwarder" 2>/dev/null
+				wait "$forwarder"
+			fi
+			forwarder=
+		else id=; fi
+		release
+		sleep 5 &
+		sleeper=$!
+		until wait_any "$sleeper"; [ "$exited" = "$sleeper" ]; do :; done
+		sleeper=
+	done
+}
+
+# Device sharing keeps its locks and log on this device; only sharing needs them.
+select_client_state() {
+	[ -z "$client_state" ] || return 0
+	if [ -n "${XDG_STATE_HOME:-}" ]; then client_state=$XDG_STATE_HOME/phimacs-client
+	elif [ -n "${HOME:-}" ]; then client_state=$HOME/.local/state/phimacs-client
+	else die "sharing keeps its lock and log under XDG_STATE_HOME or HOME; set one of them"; fi
+}
+
+client_state_directory() {
+	select_client_state
+	[ -d "$client_state" ] || { mkdir -p -- "$(dirname -- "$client_state")" && mkdir -m 700 -- "$client_state"; } \
+		|| die "cannot create $client_state"
+}
+
+# Persistent shares are per destination: share-HEX.lock/.pid, HEX encoding PHIMACS_HOST.
+share_files() {
+	printf '%s/share-%s' "$client_state" "$(printf '%s' "$host" | od -An -v -tx1 | tr -d ' \n')"
+}
+
+persistent_share_running() {
+	local lock
+	select_client_state
+	lock=$(share_files).lock
+	command -v flock >/dev/null && [ -e "$lock" ] && ! flock -n "$lock" true
+}
+
+share() {
+	local files
+	[ -n "$host" ] || die "share needs PHIMACS_HOST"
+	command -v flock >/dev/null || die "share needs flock (util-linux)"
+	client_state_directory
+	files=$(share_files)
+	exec 9>>"$files.lock"
+	flock -n 9 || die "a persistent share to $host already runs (pid $(cat "$files.pid" 2>/dev/null || echo unknown))"
+	share_pidfile=$files.pid
+	echo $$ >"$share_pidfile"
+	# Closing descriptor 9 for the loop leaves the lock only on bash's close-on-exec
+	# copy: no child holds it, so the lock ends with this shell however it ends.
+	share_loop 9>&-
+}
+
+client_install() {
+	local target=$1 temporary
+	[ -n "$host" ] || die "client install needs PHIMACS_HOST: it fetches the client from that host"
+	temporary=$(mktemp "$(dirname -- "$target")/.phimacs-client.XXXXXX") || die "cannot create a file beside $target"
+	if ssh "${ssh_batch[@]}" -T -- "$host" "$(remote_line client)" </dev/null >"$temporary" \
+		&& bash -n "$temporary" && grep -qx '# phimacs-client: 1' "$temporary" \
+		&& chmod 755 "$temporary" && mv -f -- "$temporary" "$target"; then
+		echo "phimacs: installed the client from $host as $target"
+	else
+		rm -f -- "$temporary"
+		die "the client from $host failed to download or verify; $target is unchanged"
+	fi
+}
+
+remote() {
+	local -a tty=(-T)
+	local share_pid='' frame_pid='' status
+	case ${1:-} in ''|-*|pi|pimux) [ -t 0 ] && [ -t 1 ] && tty=(-t) ;; esac
+	case ${1:-} in ''|--gui|--|pi)
+		if [ "${PHIMACS_SHARE:-}" = 1 ] && ! persistent_share_running; then
+			client_state_directory
+			share_loop >>"$client_state/share.log" 2>&1 &
+			share_pid=$!
+		fi ;;
+	esac
+	[ -n "$share_pid" ] || exec ssh "${tty[@]}" -- "$host" "$(remote_line "$@")"
+	# This shell owns the frame and the session share: settle both however it ends.
+	# The share's own exit releases its remote sockets.
+	trap 'kill ${frame_pid:+"$frame_pid"} "$share_pid" 2>/dev/null; wait ${frame_pid:+"$frame_pid"} "$share_pid"' EXIT
+	trap 'exit 129' HUP
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
+	# In the background so a signal runs the traps at once; the terminal stays its input.
+	ssh "${tty[@]}" -- "$host" "$(remote_line "$@")" <&0 &
+	frame_pid=$!
+	wait "$frame_pid"
+	status=$?
+	frame_pid=
+	exit "$status"
+}
+
+case ${1:-} in
+share) [ $# -eq 1 ] || die "usage: phimacs share"; share ;;
+client)
+	if [ "${2:-}" = install ]; then client_install "${3:-$self}"; exit; fi
+	[ $# -eq 1 ] || die "usage: phimacs client [install [FILE]]"
+	if [ -z "$local_only" ] && [ -n "$host" ]; then remote client; fi
+	cat -- "$self"; exit ;;
+esac
+if [ -z "$local_only" ] && [ -n "$host" ]; then remote "$@"; fi
+
+root=$(dirname -- "$(dirname -- "$self")")
+[ -f "$root/scripts/run.mjs" ] || die "no Phimacs checkout around $self; set PHIMACS_HOST to use one over SSH"
+[ -f "$root/packages/pimux/dist/service-client.js" ] \
+	|| die "prepare the checkout first: cd $root && npm ci --ignore-scripts && npm run compile"
+if [ "${1:-}" = pi ]; then shift; exec node "$root/scripts/pi.mjs" "$@"; fi
+exec node "$root/scripts/run.mjs" "$@"

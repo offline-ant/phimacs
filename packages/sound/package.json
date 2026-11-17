@@ -1,0 +1,30 @@
+{
+  "name": "@phimacs/sound",
+  "version": "0.1.0",
+  "description": "Explicitly configured speech transcription, dictation, text-to-speech and notifications",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/offline-ant/phimacs.git",
+    "directory": "packages/sound"
+  },
+  "keywords": ["pi-package", "pi-extension", "dictation", "text-to-speech"],
+  "engines": { "node": ">=24" },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./cli": { "types": "./dist/cli.d.ts", "default": "./dist/cli.js" },
+    "./extension": { "types": "./dist/extension.d.ts", "default": "./dist/extension.js" }
+  },
+  "bin": { "pi-sound": "./dist/main.js" },
+  "files": ["dist", "host-modules.ts", "sounds", "emacs/pi-sound.el", "emacs/pi-sound-target.el", "README.md", "PROVENANCE.md", "LICENSE"],
+  "pi": { "extensions": ["./host-modules.ts", "./dist/extension.js"] },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json",
+    "compile": "node ../../scripts/compile-package.mjs && chmod +x dist/main.js",
+    "prepack": "npm run compile"
+  },
+  "dependencies": { "@phimacs/pimux": "0.1.0" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" },
+  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true }, "typebox": { "optional": true } }
+}

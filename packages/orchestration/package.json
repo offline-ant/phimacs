@@ -1,0 +1,111 @@
+{
+  "name": "@phimacs/orchestration",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Shared Pi workers and panels for tmux, Herdr, and Emacs/Pilish",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "workers"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/offline-ant/phimacs.git",
+    "directory": "packages/orchestration"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./host-modules.ts",
+      "./dist/worker-frame.js",
+      "./dist/extensions/orchestration-host.js",
+      "./dist/extensions/panels.js",
+      "./dist/extensions/wait.js",
+      "./dist/extensions/fork-here.js",
+      "./dist/extensions/switch.js",
+      "./dist/extensions/delegate.js",
+      "./dist/extensions/remote.js",
+      "./dist/extensions/waiting.js"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "phimacs-task-status": "./dist/worker-task-cli.js"
+  },
+  "scripts": {
+    "check": "tsc --noEmit -p tsconfig.json",
+    "compile": "node ../../scripts/compile-package.mjs && chmod +x dist/worker-task-cli.js",
+    "prepack": "npm run compile"
+  },
+  "exports": {
+    "./bash-tool": {
+      "types": "./dist/bash-tool.d.ts",
+      "default": "./dist/bash-tool.js"
+    },
+    "./worker-task": {
+      "types": "./dist/worker-task.d.ts",
+      "default": "./dist/worker-task.js"
+    },
+    "./context": {
+      "types": "./dist/context.d.ts",
+      "default": "./dist/context.js"
+    },
+    "./remote-session": {
+      "types": "./dist/remote-session.d.ts",
+      "default": "./dist/remote-session.js"
+    },
+    "./error-events": {
+      "types": "./dist/error-events.d.ts",
+      "default": "./dist/error-events.js"
+    },
+    "./self-compact-handoff": {
+      "types": "./dist/self-compact-handoff.d.ts",
+      "default": "./dist/self-compact-handoff.js"
+    },
+    "./session-transfer": {
+      "types": "./dist/session-transfer.d.ts",
+      "default": "./dist/session-transfer.js"
+    },
+    "./session-tools": {
+      "types": "./dist/session-tools.d.ts",
+      "default": "./dist/session-tools.js"
+    },
+    "./terminal-input": {
+      "types": "./dist/terminal-input.d.ts",
+      "default": "./dist/terminal-input.js"
+    },
+    "./worker-frame": {
+      "types": "./dist/worker-frame.d.ts",
+      "default": "./dist/worker-frame.js"
+    },
+    "./fork-here": {
+      "types": "./dist/extensions/fork-here.d.ts",
+      "default": "./dist/extensions/fork-here.js"
+    },
+    "./terminal-extension": "./dist/extensions/terminal-input.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "host-modules.ts",
+    "emacs/pi-orchestration.el",
+    "shell",
+    "skills",
+    "LICENSE",
+    "README.md"
+  ],
+  "dependencies": {
+    "@phimacs/pimux": "0.1.0"
+  }
+}
