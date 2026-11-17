@@ -46,6 +46,17 @@ export function reserveManagedSession(file: string): ClaimHandle {
   return next;
 }
 
+/**
+ * Reserve FILE as reserveManagedSession does when this Pi was given a managed claim.
+ * Only a genuinely unmanaged Pi, which never received a claim, gets undefined and
+ * keeps stock Pi semantics. A malformed, lost, conflicting or failed claim still throws.
+ */
+export function reserveSessionIfManaged(file: string): ClaimHandle | undefined {
+  const globals = globalThis as typeof globalThis & { [KEY]?: GuardState };
+  if (!globals[KEY] && process.env[MANAGED_CLAIM_ENV] === undefined) return undefined;
+  return reserveManagedSession(file);
+}
+
 /** Loaded once per runtime; process-wide capabilities survive Pi's extension rebinds. */
 export function installManagedSessionGuard(pi: ExtensionAPI): void {
   if (!process.env[MANAGED_CLAIM_ENV]) return;

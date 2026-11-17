@@ -314,11 +314,29 @@ test('setup prepares private state, then registers orchestration only when the o
     run: (command, args) => command === options.emacs ? { status: 0, stdout: 'phimacs-orchestration:on' }
       : (rerun.push([command, ...args]), { status: 0 }) });
   assert.deepEqual(rerun.slice(2), ['Emacs packages, native module, grammars and checkout bytecode are ready.',
-    'The orchestration Pi extension is already registered.', 'Setup is complete. Start Phimacs with: phimacs']);
+    'The orchestration Pi package is already registered.', 'Setup is complete. Start Phimacs with: phimacs']);
   assert.match(rerun[0], /^Checking the prepared packages in .* and compiling this checkout's Lisp\.$/);
   await fs.chmod(options.state, 0o755);
   await assert.rejects(setup(options, { env, install: () => { throw new Error('must not prepare'); } }),
     /must be your own non-symlink directory with mode 0700; create it with mkdir -m 700/);
+}));
+
+test('setup refuses another copy of its Pi package before preparing Emacs and leaves Pi settings unchanged', () => fixture(async ({ temporary, options, env, write }) => {
+  await write(path.join(temporary, 'pi-ant/package.json'), { name: 'pi-ant' });
+  const settings = path.join(env.HOME, '.pi/agent/settings.json');
+  await write(settings, { packages: [path.join(temporary, 'pi-ant')] });
+  const before = await fs.readFile(settings, 'utf8');
+  const choice = selected => command => command === options.emacs ? { status: 0, stdout: `phimacs-orchestration:${selected}` } : { status: 1 };
+  const steps = [];
+  await assert.rejects(setup(options, { env, log: line => steps.push(line), run: choice('on'),
+    install: () => { throw new Error('must not prepare'); } }),
+  new RegExp(`already loads other copies[^]*Pi's settings are unchanged\\. Remove those copies, then run this setup again:\\n  pi remove ${path.join(temporary, 'pi-ant')}$`));
+  assert.deepEqual(steps, [], 'nothing was prepared or registered');
+  assert.equal(await fs.readFile(settings, 'utf8'), before);
+  // Without orchestration setup registers nothing, so the copy does not block preparation.
+  const prepared = [];
+  await setup(options, { env, log: () => {}, run: choice('off'), install: () => prepared.push('install') });
+  assert.deepEqual(prepared, ['install']);
 }));
 
 test('setup facts: the real override choice, Pi registration and prepared assets', { skip: !process.env.PHIMACS_TEST_EMACS_DIR }, async t => {

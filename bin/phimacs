@@ -5,6 +5,9 @@
 #   phimacs [--gui|--no-frame] [-- ARGS]  start or attach pimux and the Emacs
 #                                         daemon, then open a terminal or GUI frame
 #   phimacs setup                         one-time networked preparation
+#   phimacs setup pi [--browser] [--sound]
+#                                         build and register the Pi packages for
+#                                         plain pi; no Emacs or service
 #   phimacs status [--json]               service, agents, Emacs, setup, shares
 #   phimacs stop [--force]                save and quit Emacs, then stop pimux
 #   phimacs pi [ARGS]                     Pi's terminal UI under the managed
@@ -257,7 +260,13 @@ if [ -z "$local_only" ] && [ -n "$host" ]; then remote "$@"; fi
 
 root=$(dirname -- "$(dirname -- "$self")")
 [ -f "$root/scripts/run.mjs" ] || die "no Phimacs checkout around $self; set PHIMACS_HOST to use one over SSH"
+# A fresh clone has nothing compiled yet: `setup pi` builds what it needs itself.
+if [ "${1:-}" = setup ] && [ "${2:-}" = pi ]; then
+	command -v node >/dev/null || die "setup pi needs Node 24 or newer on PATH"
+	shift 2
+	exec node "$root/scripts/setup-pi.mjs" "$@"
+fi
 [ -f "$root/packages/pimux/dist/service-client.js" ] \
-	|| die "prepare the checkout first: cd $root && npm ci --ignore-scripts && npm run compile"
+	|| die "prepare the checkout first: cd $root && npm ci --ignore-scripts && npm run compile (or, for plain pi only: phimacs setup pi)"
 if [ "${1:-}" = pi ]; then shift; exec node "$root/scripts/pi.mjs" "$@"; fi
 exec node "$root/scripts/run.mjs" "$@"

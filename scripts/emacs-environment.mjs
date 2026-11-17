@@ -3,7 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { hostVersionWarning, runtimePaths, runtimeEnvironment, sourceRoot } from './runtime.mjs';
+import { hostVersionWarning } from './pi-packages.mjs';
+import { runtimePaths, runtimeEnvironment, sourceRoot } from './runtime.mjs';
 
 export function parseOptions(argv, env = process.env) {
   const options = { root: env.PHIMACS_ROOT || sourceRoot,

@@ -11,9 +11,17 @@ Use the same packages in any of three ways:
   service and a dedicated Emacs daemon, then opens a terminal frame (`--gui` for a
   graphical one). `emacs --init-directory=…/emacs/config` also works. The profile
   does not replace `~/.emacs.d`.
-- **Use Pi in Herdr or tmux, without Emacs:** workers, panels and the general
-  extensions in Pi's own terminal UI; this also covers
-  [updating from `pi-ant` or `pi-browser`](docs/install.md#pi-in-herdr-or-tmux-without-emacs).
+- **Use plain `pi` in Herdr or tmux, without Emacs:** workers, panels and the
+  general extensions, with Node 24+ and Pi on PATH:
+
+  ```sh
+  git clone https://github.com/offline-ant/phimacs
+  phimacs/bin/phimacs setup pi
+  pi
+  ```
+
+  [Pi in Herdr or tmux](docs/install.md#pi-in-herdr-or-tmux-without-emacs) covers
+  options, updates and moving from `pi-ant` or `pi-browser`.
 
 [Installation](docs/install.md) owns the ordered setup: clone and compile, provider
 login, `phimacs setup` once for pinned packages and native assets, then `phimacs`.

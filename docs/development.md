@@ -214,6 +214,20 @@ registry and unchanged resolved registry URLs. It checks real installed
 CLI/extension loading, no checkout links or nested host SDKs, absent optional
 packages, synthetic prompt and owned cleanup. A pack dry-run alone is not that evidence.
 
+`phimacs setup pi` runs in a fresh clone of this checkout, including its uncommitted
+changes, with a disposable `HOME` and `PI_CODING_AGENT_DIR` and the installed `pi`:
+
+```sh
+node --test test/pi-packages.test.mjs test/install/setup-pi.test.mjs
+PHIMACS_SETUP_PI=1 node --test test/install/setup-pi.test.mjs
+```
+
+The default run checks the refusals before any build. The explicit long lane
+(allow ten minutes; it runs `npm ci` three times, from the caller's npm cache
+or `PHIMACS_TEST_NPM_CACHE`, preferring cached packages) checks registration,
+an unchanged rerun, `--browser --sound`, the loaded commands from Pi's RPC mode,
+no sound configuration, and the printed uninstall commands.
+
 ## Native integration lanes
 
 Select deliberately and use only prepared inputs and fixture-owned services,

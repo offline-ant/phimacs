@@ -1,13 +1,96 @@
 # Installation
 
-Choose either the complete Emacs profile or packages for your existing
-configuration. Both consume one Phimacs release. Neither path requires private
-providers, personal settings or a machine-specific service supervisor. Pi's own
-terminal UI can also use the Pi packages without Emacs:
-see [Pi in Herdr or tmux](#pi-in-herdr-or-tmux-without-emacs).
+Phimacs installs in three ways from one checkout: its Pi packages for plain `pi`
+in Herdr or tmux, the complete Emacs profile, or packages for your existing Emacs
+configuration. None requires private providers, personal settings or a
+machine-specific service supervisor.
 
 The complete profile needs four steps: clone and compile, log in to a provider,
 run `phimacs setup` once, then run `phimacs`.
+
+## Pi in Herdr or tmux, without Emacs
+
+Plain `pi` in a [Herdr](https://herdr.dev) or tmux pane can use managed workers,
+panels and forks, the general extensions, and optionally the browser tools and
+sound. This needs neither Emacs nor the pimux service. It needs Linux, Git,
+Node 24+ and Pi 1.5.2 on PATH; setup never installs or upgrades Pi:
+
+```sh
+npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
+git clone https://github.com/offline-ant/phimacs
+phimacs/bin/phimacs setup pi      # add --browser and/or --sound for those packages
+pi
+```
+
+`setup pi` is newer than release v0.1.0: use `main` or a later release tag. It:
+
+1. checks Node and the `pi` on PATH, and warns when Pi's major.minor version
+   differs from the tested one;
+2. refuses, changing nothing, while Pi already loads another copy of these
+   packages or the archived `pi-ant`/`pi-browser` ones, from its settings or its
+   `extensions/` directory, and prints the exact `pi remove` command or file;
+3. runs `npm ci --ignore-scripts`, which downloads the whole root dependency graph
+   (including the Pi SDK), and compiles only pimux, orchestration and extensions,
+   plus browser and sound when selected or already registered;
+4. registers each package with `pi install ABSOLUTE-PATH` in Pi's user settings
+   (`~/.pi/agent/settings.json`, or `PI_CODING_AGENT_DIR`). Other entries and
+   their filters stay; registered packages are skipped.
+
+Pi loads the packages from the checkout, so keep it in place. `--sound` enables no
+recording or speech backend; the [sound README](../packages/sound/README.md) says
+how to configure one. The [browser README](../packages/browser/README.md) lists
+what its tools need.
+
+Orchestration uses the Herdr or tmux pane Pi runs in for workers and panels;
+`/orchestration-host status` shows it. Outside both, worker tools report that
+there is no host. If you saved a tool selection with `/tools`, it stays exact:
+enable new tools there. `phimacs pi` is an optional variant of `pi` that also holds
+a writer claim on its conversation, as orchestration does for its workers, so no
+second cooperating Pi opens it; plain `pi` behaves like stock Pi.
+
+For Herdr's agent states and the extensions'
+[finish prompts](../packages/extensions/README.md#herdr-finish-prompts), install
+Herdr's own Pi integration once with `herdr integration install pi`. Herdr 0.9.0
+writes `extensions/herdr-agent-state.ts` into Pi's agent directory, honoring
+`PI_CODING_AGENT_DIR`, and refuses while that directory does not exist yet;
+`setup pi` creates it. Phimacs is checked with Herdr 0.9.0 and 0.9.5.
+
+**Update:** Pi agents and workers load code from the checkout, so let them finish
+and exit them first. Then run `git -C phimacs pull` and `phimacs/bin/phimacs setup pi`
+again.
+
+**Uninstall:** `pi remove` each registered path, as `setup pi` lists at its end,
+for example `pi remove "$PWD/phimacs/packages/orchestration"`, then delete the
+clone. Authentication, sessions and other settings stay.
+
+### Updating from pi-ant or pi-browser
+
+The archived `pi-ant` and `pi-browser` repositories continue here. Agents and
+workers that run the old code cannot move to the new code, so let them finish and
+exit them first. Then clone and run `setup pi` as above: it refuses while the old
+packages are configured and prints the `pi remove` commands for them, for example:
+
+```sh
+pi remove /path/to/pi-ant/orchestration
+pi remove /path/to/pi-ant
+pi remove /path/to/pi-browser
+```
+
+`pi remove` changes only the package list; authentication, sessions and other
+settings stay. The packages moved:
+
+| Old path | New path |
+|---|---|
+| `pi-ant/orchestration` | `packages/orchestration` |
+| `pi-ant` | `packages/extensions` |
+| `pi-browser` | `packages/browser` |
+
+Tau, its web frontend, is gone, and with it `/switch tau` and `/rec-setting` (the
+[sound](../packages/sound/README.md) package's `/dictate-setting` replaces it).
+`/take` is gone too. From a Pi in Herdr or tmux, `/switch` refuses to hand over
+the session; it only attaches another frontend to a detached Emacs agent. Tools
+added since, such as `microdo`, `py` (which needs `uv`) and `prompt_history`, stay
+off under a saved `/tools` selection until you enable them there.
 
 ## Requirements and source
 
@@ -458,88 +541,6 @@ package's subtree, not the monorepo. Pilish's local `.elpaignore` excludes its t
 script and benchmark sources. The literal offline installation fixture in
 [development](development.md#installation-checks) verifies source revision,
 bytecode origins and scope, and that pi-deck refuses a Pilish without its runtime.
-
-## Pi in Herdr or tmux, without Emacs
-
-Pi's own terminal UI in a [Herdr](https://herdr.dev) or tmux pane can use managed
-workers, panels and forks, the general extensions and the browser tools. This needs
-neither Emacs, the pimux service nor `phimacs setup`. It needs Linux, Node 24+ and
-the Pi host 1.5.2:
-
-```sh
-npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.2
-```
-
-Clone the release as in [Requirements and source](#requirements-and-source), but
-compile only the packages you use, in this order, and register them with Pi:
-
-```sh
-npm ci --ignore-scripts
-npm run compile --workspace=@phimacs/pimux
-npm run compile --workspace=@phimacs/orchestration
-npm run compile --workspace=@phimacs/extensions
-npm run compile --workspace=@phimacs/browser   # optional browser tools
-pi install "$PWD/packages/orchestration"
-pi install "$PWD/packages/extensions"
-pi install "$PWD/packages/browser"             # optional
-```
-
-`pi install` with a local path only adds it to Pi's settings (`~/.pi/agent`, or
-`PI_CODING_AGENT_DIR`). Pi loads the packages from the checkout, so keep it in
-place and compile again after updating it. The [browser README](../packages/browser/README.md)
-lists what its tools need.
-
-Then start Pi in a Herdr or tmux pane, with the checkout's `bin/` on PATH:
-
-```sh
-phimacs pi [PI-ARGUMENTS]
-```
-
-`phimacs pi` runs Pi under pimux's writer claim, as orchestration runs its workers,
-so no second cooperating Pi writes the same conversation; `/worktree` needs that
-claim. Plain `pi` works too, but without the claim, and `/worktree` refuses there.
-Orchestration selects the host from the pane's environment;
-`/orchestration-host status` shows it.
-
-For Herdr's agent states and the extensions'
-[finish prompts](../packages/extensions/README.md#herdr-finish-prompts), install
-Herdr's own Pi integration once with `herdr integration install pi`, after Pi has
-run once (Herdr refuses until `~/.pi/agent/extensions` exists). Phimacs is
-checked with Herdr 0.9.0 and 0.9.5.
-
-### Updating from pi-ant or pi-browser
-
-The archived `pi-ant` and `pi-browser` repositories continue here. Agents and
-workers that run the old code cannot move to the new code, so let them finish and
-exit them first. Install Node 24+ and Pi 1.5.2, then clone, compile and
-`pi install` as above.
-
-Remove the old package paths so that no tool is registered twice. `pi list` shows
-them, for example:
-
-```sh
-pi remove /path/to/pi-ant/orchestration
-pi remove /path/to/pi-ant
-pi remove /path/to/pi-browser
-```
-
-`pi remove` changes only the package list; authentication, sessions and other
-settings stay. The packages moved:
-
-| Old path | New path |
-|---|---|
-| `pi-ant/orchestration` | `packages/orchestration` |
-| `pi-ant` | `packages/extensions` |
-| `pi-browser` | `packages/browser` |
-
-Tau, its web frontend, is gone, and with it `/switch tau` and `/rec-setting` (the
-[sound](../packages/sound/README.md) package's `/dictate-setting` replaces it).
-`/take` is gone too. From a Pi in Herdr or tmux, `/switch` refuses to hand over
-the session; it only attaches another frontend to a detached Emacs agent.
-
-A default tool selection saved with `/tools` stays exact: tools added since, such
-as `microdo`, `py` (which needs `uv`) and `prompt_history`, stay off until you
-enable them in `/tools`.
 
 ## Local npm artifacts
 

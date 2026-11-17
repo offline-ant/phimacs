@@ -11,11 +11,12 @@ import { checkDaemonStop, ensureDaemon, openFrame, privateDirectory, probe, stop
 import { runtimeEnvironment, runtimePaths } from './runtime.mjs';
 import { describeService, ensureService, serviceEnvironment, stopAll } from './service.mjs';
 import { preparedState, setup } from './setup.mjs';
+import { setupPi } from './setup-pi.mjs';
 import { shareHost } from './share-host.mjs';
 import { collectStatus, formatStatus } from './status.mjs';
 
 export const USAGE = `Usage: phimacs [--gui | --no-frame] [-- EMACSCLIENT-ARGUMENTS]
-       phimacs setup | status [--json] | stop [--force] | pi [PI-ARGUMENTS]
+       phimacs setup [pi [--browser] [--sound]] | status [--json] | stop [--force] | pi [PI-ARGUMENTS]
        phimacs service pimux|emacs | pimux ARGUMENTS | share | client [install [FILE]]
 Prefix --local to ignore PHIMACS_HOST.`;
 
@@ -123,7 +124,8 @@ export async function main(argv, env = process.env) {
   const [command, ...rest] = argv;
   if (command === undefined || command.startsWith('-')) return await frame(argv, env);
   if (command === 'setup') {
-    if (rest.length) throw new UsageError('Usage: phimacs setup');
+    if (rest[0] === 'pi') { setupPi(rest.slice(1), { env }); return 0; }
+    if (rest.length) throw new UsageError('Usage: phimacs setup [pi [--browser] [--sound]]');
     await setup(parseOptions([], env), { env });
     return 0;
   }

@@ -8,7 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { resolveHost } from '@phimacs/pimux/host-identity';
 import { acquireClaim, createClaimTestEnvironment, releaseClaim } from '@phimacs/pimux/ownership';
 import { readProcessIdentity } from '@phimacs/pimux/process-identity';
-import { hostVersionWarning, runtimePaths, runtimeEnvironment, sourceRoot } from '../scripts/runtime.mjs';
+import { hostVersionWarning } from '../scripts/pi-packages.mjs';
+import { runtimePaths, runtimeEnvironment, sourceRoot } from '../scripts/runtime.mjs';
 import { updatePi } from '../scripts/update-pi.mjs';
 
 test('checkout launch resolves the global or overriding host and administrative commands allocate no runtime', t => {

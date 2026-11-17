@@ -1,10 +1,10 @@
 // `phimacs setup`: the one-time, networked preparation the launcher never does implicitly.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { installEmacsPackages, preparationLog } from './emacs-packages.mjs';
 import { privateDirectory } from './emacs-launch.mjs';
+import { conflictReport, inspectPiPackages, registerPiPackages } from './pi-packages.mjs';
 import { runtimeEnvironment, runtimePaths } from './runtime.mjs';
 
 /** Prepared profile inputs that are missing from STATE/emacs; empty when setup is complete. */
@@ -21,17 +21,9 @@ export function preparedState(state) {
   return missing;
 }
 
-/** Whether Pi's user settings load this checkout's orchestration extension. */
+/** Whether Pi's user settings load this checkout's orchestration package; unreadable settings do not. */
 export function orchestrationInstalled(root, env = process.env) {
-  const agent = env.PI_CODING_AGENT_DIR || path.join(env.HOME || os.homedir(), '.pi/agent');
-  let settings;
-  try { settings = JSON.parse(fs.readFileSync(path.join(agent, 'settings.json'), 'utf8')); } catch { return false; }
-  const real = file => { try { return fs.realpathSync(file); } catch { return path.resolve(file); } };
-  const extension = real(path.join(root, 'packages/orchestration'));
-  return (Array.isArray(settings.packages) ? settings.packages : []).some(entry => {
-    const source = typeof entry === 'string' ? entry : entry?.source;
-    return typeof source === 'string' && real(path.resolve(agent, source)) === extension;
-  });
+  try { return inspectPiPackages(fs.realpathSync(root), env).registered.includes('orchestration'); } catch { return false; }
 }
 
 /** Read the user's orchestration choice the way profile startup does: after their overrides. */
@@ -48,10 +40,16 @@ export function orchestrationSelected(options, env = process.env, run = spawnSyn
   return answer === 'on';
 }
 
-/** Prepare packages and native assets, then register the orchestration extension if it is selected. Idempotent. */
+/** Prepare packages and native assets, then register the orchestration Pi package if it is selected. Idempotent. */
 export async function setup(options, { env = process.env, run = spawnSync, log = console.log, install = installEmacsPackages } = {}) {
   fs.mkdirSync(path.dirname(options.state), { recursive: true });
   await privateDirectory(options.state);
+  const orchestration = orchestrationSelected(options, env, run);
+  // Refuse other copies of the packages before the long preparation; registration checks again.
+  if (orchestration) {
+    const { settingsFile, conflicts } = inspectPiPackages(fs.realpathSync(options.root), env);
+    if (conflicts.length) throw new Error(conflictReport(conflicts, settingsFile));
+  }
   const missing = preparedState(options.state);
   log(missing.length
     ? `Preparing ${missing.join(', ')} in ${path.join(options.state, 'emacs')}: this downloads and builds them and takes a few minutes.`
@@ -59,18 +57,13 @@ export async function setup(options, { env = process.env, run = spawnSync, log =
   log(`Emacs's output goes to ${preparationLog(options.state)}.`);
   install({ state: options.state, emacs: options.emacs, env });
   log('Emacs packages, native module, grammars and checkout bytecode are ready.');
-  if (!orchestrationSelected(options, env, run)) {
+  if (!orchestration) {
     log('Orchestration is disabled by your overrides, so its Pi extension is not registered.');
-  } else if (orchestrationInstalled(options.root, env)) {
-    log('The orchestration Pi extension is already registered.');
   } else {
     const runtime = runtimePaths(options.root, env);
     if (!fs.existsSync(runtime.taskStatus)) throw new Error(`Compile the checkout first (npm run compile): missing ${runtime.taskStatus}`);
-    const extension = path.join(runtime.root, 'packages/orchestration');
-    log(`Registering the orchestration Pi extension: ${runtime.pi} install ${extension}`);
-    const result = run(process.execPath, [runtime.pi, 'install', extension],
-      { stdio: 'inherit', timeout: 120_000, env: runtimeEnvironment(runtime, env) });
-    if (result.error || result.status !== 0) throw new Error(`pi install failed: ${result.error?.message ?? `exit ${result.status}`}`);
+    registerPiPackages({ root: runtime.root, selected: ['orchestration'], pi: [process.execPath, runtime.pi],
+      env: runtimeEnvironment(runtime, env), log, run });
   }
   log('Setup is complete. Start Phimacs with: phimacs');
 }

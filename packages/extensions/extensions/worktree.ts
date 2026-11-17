@@ -5,13 +5,14 @@
  *
  * Creates ../<repo-basename>-<name> from the current git repository. After the
  * worktree is created, forks the current session into the new worktree and
- * switches pi to that forked session.
+ * switches pi to that forked session. A Pi under a managed writer claim (such as
+ * `phimacs pi` or a worker) also claims the new session; a plain `pi` has none.
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { SessionManager, type ExtensionAPI, type SessionEntry, type SessionHeader } from "@earendil-works/pi-coding-agent";
-import { reserveManagedSession } from "@phimacs/orchestration/session-transfer";
+import { reserveSessionIfManaged } from "@phimacs/orchestration/session-transfer";
 
 const WORKTREE_COMMAND_TIMEOUT_MS = 120_000;
 const GIT_ROOT_TIMEOUT_MS = 10_000;
@@ -45,9 +46,9 @@ function flushSessionFile(sessionManager: SessionManager, sessionFile: string): 
 
   const entries: Array<SessionHeader | SessionEntry> = [header, ...sessionManager.getEntries()];
   fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-  // The guard owns the absent path before the first write. Exclusive creation
+  // A managed Pi owns the absent path before the first write. Exclusive creation
   // also refuses unexpected preexisting bytes rather than rewriting them.
-  reserveManagedSession(sessionFile);
+  reserveSessionIfManaged(sessionFile);
   fs.writeFileSync(sessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
 }
 
@@ -64,8 +65,8 @@ export default function (pi: ExtensionAPI) {
 
       try {
         const current = ctx.sessionManager.getSessionFile();
-        if (!current) throw new Error("The current session has no managed persistent identity.");
-        reserveManagedSession(current);
+        if (!current) throw new Error("The current session is not saved to a file.");
+        reserveSessionIfManaged(current);
       } catch (error) {
         ctx.ui.notify(`Worktree creation refused before changing Git or session files: ${errorMessage(error)}`, "error");
         return;
