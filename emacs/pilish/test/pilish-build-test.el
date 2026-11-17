@@ -222,9 +222,9 @@
         (let ((entry (buffer-substring-no-properties (point-min) (match-beginning 0))))
           (should (string-match-p (regexp-quote date) entry))
           (should (string-match-p (regexp-quote "[[file:NOTICE.md]") entry)))))
-    (dolist (revision (list (plist-get (plist-get manifest :import) :revision)
-                           (plist-get (plist-get manifest :import) :upstreamBase)))
-      (should (string-match-p (regexp-quote revision) notice)))
+    (should (string-match-p
+             (regexp-quote (plist-get (plist-get manifest :upstream) :incorporatedRevision))
+             notice))
     (should (string-match-p "GPL-3.0-or-later" notice))
     (should (file-readable-p (expand-file-name "LICENSE" pilish-test-build--repo-root)))))
 

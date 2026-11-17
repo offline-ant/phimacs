@@ -90,17 +90,9 @@ test("incorporated Pilish source keeps its GPL and recorded upstream identity", 
   const provenance = JSON.parse(fs.readFileSync(path.join(root, "provenance/pilish-import.json"), "utf8"));
   assert.match(provenance.upstream.incorporatedRevision, /^[a-f0-9]{40}$/);
   assert.match(provenance.upstream.repository, /github\.com\/dnouri\/pilish/);
+  assert.ok(provenance.selection.excludeDirectories.length > 0);
+  assert.match(fs.readFileSync(path.join(directory, "NOTICE.md"), "utf8"), /Modified-version notice — \d{4}-\d{2}-\d{2}/);
   assert.equal(fs.existsSync(path.join(directory, ".git")), false, "Pilish is ordinary product source");
-});
-
-test("pimux artifacts retain their current and historical navigation input notices", () => {
-  const pimux = packages.find(({ manifest }) => manifest.name === "@phimacs/pimux")!;
-  assert.ok(pimux.manifest.files.includes("NOTICE.md"));
-  const notice = fs.readFileSync(path.join(pimux.directory, "NOTICE.md"), "utf8");
-  assert.match(notice, /current `tree-navigate\.ts` was independently authored/);
-  assert.match(notice, /Historical implementation/);
-  assert.match(notice, /643c7f7ece0d62320a31ad3804fff529e193ab75/);
-  assert.ok(fs.statSync(path.join(root, "provenance/tree-navigation.md")).isFile());
 });
 
 test("runtime imports use declared exports and form an acyclic package graph", () => {

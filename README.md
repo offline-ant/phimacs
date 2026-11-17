@@ -42,4 +42,4 @@ not part of this product.
 - [Runtime protocol](docs/runtime-contract.md)
 - [Pilish upstream maintenance](docs/pilish-upstream.md)
 - [Dependency security](docs/dependency-security.md)
-- [Source provenance and licensing](provenance/README.md)
+- [Third-party sources and licensing](provenance/README.md)

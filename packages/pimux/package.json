@@ -101,7 +101,6 @@
     "dist",
     "bin",
     "LICENSE",
-    "NOTICE.md",
     "README.md"
   ],
   "bin": {

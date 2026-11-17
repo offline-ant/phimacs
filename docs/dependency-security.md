@@ -19,8 +19,8 @@
 - A separate HTTP/proxy/TLS/glob matrix against the bundled host remains
   unverified. Ordinary focused tests and npm audit do not establish that matrix.
 - Preserve dependency/asset grants, including minimatch's BlueOak-1.0.0 license
-  and Pilish's GPL. [Provenance](../provenance/README.md) owns source records and
-  distribution review. A current-tree scan does not clear prior public history.
+  and Pilish's GPL. [Third-party sources](../provenance/README.md) lists the
+  incorporated third-party grants.
 
 Credentials, project trust and provider usage remain explicit user decisions.
 Tests use synthetic inference and owned state, not personal browser profiles,

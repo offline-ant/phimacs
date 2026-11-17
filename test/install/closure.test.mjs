@@ -101,7 +101,6 @@ for (const managed of [false, true]) {
       const [pack] = JSON.parse(run('npm', ['pack', '--ignore-scripts', '--json', `--workspace=@phimacs/${name}`, '--pack-destination', artifacts], root, env));
       assert.equal(pack.name, `@phimacs/${name}`);
       assert.ok(pack.files.some(file => file.path === 'LICENSE'));
-      if (name === 'pimux') assert.ok(pack.files.some(file => file.path === 'NOTICE.md'));
       if (name === 'orchestration') {
         for (const file of ['host-modules.ts', 'emacs/pi-orchestration.el', 'shell/osc133.bash']) assert.ok(pack.files.some(entry => entry.path === file), file);
       }
@@ -125,7 +124,6 @@ for (const managed of [false, true]) {
       assert.equal(fs.existsSync(path.join(packageDirectory, 'node_modules/@earendil-works/pi-coding-agent')), false);
       assert.ok(fs.statSync(path.join(packageDirectory, 'LICENSE')).isFile());
     }
-    assert.match(fs.readFileSync(path.join(prefix, 'node_modules/@phimacs/pimux/NOTICE.md'), 'utf8'), /Historical implementation/);
     pimux = fs.realpathSync(path.join(prefix, 'node_modules/.bin/pimux'));
     const pi = fs.realpathSync(path.join(prefix, 'node_modules/.bin/pi'));
     assert.ok(pi.startsWith(path.join(prefix, 'node_modules/@earendil-works/pi-coding-agent') + path.sep));

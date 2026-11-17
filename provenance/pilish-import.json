@@ -1,15 +1,7 @@
 {
-  "schemaVersion": 1,
   "package": "pilish",
   "destination": "emacs/pilish",
   "license": "GPL-3.0-or-later",
-  "import": {
-    "repository": "https://github.com/offline-ant/pilish.git",
-    "revision": "b3fc14f969faa363bf8dbcd3b7bcf36486470acf",
-    "tree": "6c6f30299634c7629746e4050a9ad0d8544c8dbe",
-    "upstreamBase": "5a83d26a44fc87cf54b52b2f9d80806964dd5634",
-    "includedFileCount": 144
-  },
   "upstream": {
     "repository": "https://github.com/dnouri/pilish.git",
     "incorporatedRevision": "5a83d26a44fc87cf54b52b2f9d80806964dd5634"

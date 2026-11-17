@@ -260,6 +260,6 @@ directory updates and export of reviewed changes to upstream PRs. The public for
 remains an unarchived contribution vehicle; do not freeze open PR branches or
 maintain a second patched product tree. Keep useful owning package test structure.
 
-[Provenance](../provenance/README.md) owns source/license records and distribution
-review. Review each release's exact tree for license notices, source obligations
+[Third-party sources](../provenance/README.md) lists incorporated third-party
+material and its licenses. Review each release's exact tree for license notices, source obligations
 and secrets. No local test result certifies license clearance or secret scanning.

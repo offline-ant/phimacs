@@ -17,7 +17,7 @@
     "./extension": { "types": "./dist/extension.d.ts", "default": "./dist/extension.js" }
   },
   "bin": { "pi-sound": "./dist/main.js" },
-  "files": ["dist", "host-modules.ts", "sounds", "emacs/pi-sound.el", "emacs/pi-sound-target.el", "README.md", "PROVENANCE.md", "LICENSE"],
+  "files": ["dist", "host-modules.ts", "sounds", "emacs/pi-sound.el", "emacs/pi-sound-target.el", "README.md", "LICENSE"],
   "pi": { "extensions": ["./host-modules.ts", "./dist/extension.js"] },
   "scripts": {
     "check": "tsc --noEmit -p tsconfig.json",

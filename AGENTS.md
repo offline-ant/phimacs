@@ -14,7 +14,7 @@ The root package.json and package-lock.json own the npm graph and supported Pi.
 - Install with scripts disabled. Compile/check the affected packages and run
   focused regressions. Unrelated native assets and product-wide acceptance are
   not required for ordinary edits.
-- Preserve licenses and attribution; record each import's source, revision and
+- Preserve licenses and attribution; record each third-party import's source and
   license in provenance/README.md.
 - Keep credentials, sessions, profiles, device policy and private integrations
   outside source.

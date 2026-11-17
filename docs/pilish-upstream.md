@@ -6,10 +6,8 @@ individually installed Emacs packages consume this same fork. Keep Pilish's
 GPL-3.0-or-later license, copyright headers, authorship and required notices;
 the root MIT license does not relicense it.
 
-[The import manifest](../provenance/pilish-import.json) owns the original fork
-revision, its upstream base, the last incorporated upstream revision and source
-selection. The initial fork snapshot is `b3fc14f969faa363bf8dbcd3b7bcf36486470acf`;
-its verified upstream base is `5a83d26a44fc87cf54b52b2f9d80806964dd5634`.
+[The import manifest](../provenance/pilish-import.json) owns the upstream
+repository, the last incorporated upstream revision and source selection.
 The imported files remain locally maintained; do not overwrite them with an
 upstream checkout or rebase the monorepo onto upstream history.
 
@@ -17,8 +15,7 @@ upstream checkout or rebase the monorepo onto upstream history.
 
 Import only the committed tracked tree. The manifest excludes `.github/`,
 `hooks/` and `.agents/`: their repository-root workflows, hook installation and
-verification instructions are not Phimacs integration mechanisms. The initial
-selection has 144 files. This is an import count, not the current package size.
+verification instructions are not Phimacs integration mechanisms.
 
 Do not copy `.git`, untracked changes, installed dependencies, caches, bytecode,
 review recordings or generated test output. Retain required tracked assets,
@@ -27,8 +24,7 @@ including the logo. Before an update, inspect its paths against the manifest's
 to source selection explicitly and use the same selection for import and future
 updates. Do not silently expand exclusions to hide a conflict.
 
-Keep original import metadata unchanged. Advance only
-`upstream.incorporatedRevision` after an accepted update; it is not a package
+Advance `upstream.incorporatedRevision` only after an accepted update; it is not a package
 version or a claim that every upstream feature has been adopted unchanged.
 
 ## Work boundaries

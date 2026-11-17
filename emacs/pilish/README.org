@@ -4,8 +4,8 @@
 
 *Modified version — 2026-11-16.* This is Phimacs's maintained modified version
 of [[https://github.com/dnouri/pilish][Pilish]], released under GPL-3.0-or-later, not an unmodified upstream
-release.  The [[file:NOTICE.md][modified-version notice]] identifies the upstream/fork bases and
-distinguishes imported fork changes from Phimacs incorporation changes.
+release.  The [[file:NOTICE.md][modified-version notice]] identifies the upstream base and
+summarizes the changes.
 It is usable on its own or with the other packages in this repository.
 [[file:../../docs/pilish-upstream.md][Upstream maintenance]] records its source and contribution process.
 
