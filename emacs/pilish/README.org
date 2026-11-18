@@ -245,13 +245,21 @@ started.
 =C-r= and =C-s= keep their ordinary Emacs meaning: incremental search
 within the current draft, never prompt-history recall.  When Pilish loads
 or resumes a session, the saved user prompts join the history commands
-automatically.
+automatically; a reload while you browse history keeps the recalled prompt,
+and =M-n= still restores your unfinished draft.
 
-Set =pilish-input-arrow-history= to make =↑= / =↓= browse like Pi's
-editor: =↑= on the first line recalls the previous prompt when the input
-is empty, point is at its start, or a recalled prompt is unedited, and
-=↓= on the last line moves forward until the draft returns.  On other
-lines the arrows move point.
+Set =pilish-input-arrow-history= to let =↑= / =↓= browse prompt history
+from the draft's edges, as in Pi's editor.  =↑= on the first screen line
+acts as =M-p= when the input is empty, point is at its start, or a
+recalled prompt is shown as it was recalled; =↓= on the last screen line
+acts as =M-n= in that case too, until your draft returns.  Wrapped lines
+count as screen lines, so on other lines, including the earlier rows of
+a long wrapped line, the arrows move point.  The arrows share the
+history position of =M-p=, =M-n= and =M-r=, and say nothing at either
+end of history.  While the input differs from the recalled prompt, they
+only move point; =M-n= still restores your draft, and undoing your edits
+lets the arrows browse again.  During an incremental search, in a
+narrowed input and with =Shift=, the arrows keep their usual bindings.
 
 ** Send, steer, queue, and abort
 
@@ -756,6 +764,10 @@ Input buffer (normal state):
 | =RET= | send               |
 | =q=   | close input window |
 | =?=   | transient menu     |
+
+With =pilish-input-arrow-history=, =↑= / =↓= browse prompt history
+from the draft's first or last screen line in normal and insert state;
+elsewhere they keep their usual bindings.
 
 Session and tree browser buffers start in motion state as well.  Evil's
 =j= / =k= move line-wise.  Magit's section motions remain on =n= / =p=

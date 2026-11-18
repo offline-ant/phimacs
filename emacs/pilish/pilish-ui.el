@@ -1286,12 +1286,16 @@ removing the instructional header that would otherwise appear."
 (defconst pilish--input-arrow-up-binding
   '(menu-item "" pilish-input-history-up
               :filter pilish--input-arrow-up-filter)
-  "Input <up> binding: Pi-style history only where its filter applies.")
+  "Input <up> binding: Pi-style history only where its filter applies.
+The filter returns nil elsewhere, so <up> falls through to the usual
+command.  See `pilish-input-arrow-history'.")
 
 (defconst pilish--input-arrow-down-binding
   '(menu-item "" pilish-input-history-down
               :filter pilish--input-arrow-down-filter)
-  "Input <down> binding: Pi-style history only where its filter applies.")
+  "Input <down> binding: Pi-style history only where its filter applies.
+The filter returns nil elsewhere, so <down> falls through to the usual
+command.  See `pilish-input-arrow-history'.")
 
 (defvar pilish-input-mode-map
   (let ((map (make-sparse-keymap)))
