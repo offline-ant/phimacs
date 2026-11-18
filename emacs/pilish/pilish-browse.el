@@ -79,7 +79,8 @@
 ;; Forward declarations for functions in other modules (avoid circular deps)
 (declare-function pilish-set-session-name "pilish-menu" (name &optional input-context))
 (declare-function pilish-start-session "pilish" t) ; cl-defun with &key options
-(declare-function pilish-session-exists-p "pilish" (directory name))
+(declare-function pilish-session-exists-p "pilish" (directory &optional name))
+(declare-function pilish-show-session "pilish" (chat-buffer))
 (declare-function pilish--show-session-buffers "pilish" (chat-buf input-buf))
 (declare-function pilish--resume-selected-session "pilish-menu"
                   (proc chat-buf selected-path &optional input-context))
@@ -4725,28 +4726,39 @@ when it returns nil)."
         t)
     (not (pilish--session-transition-ready-p chat-buf action))))
 
-(defun pilish--browse-open-in-new-view (path)
-  "Open session file PATH in a fresh view and link this browser to it.
-The browser's own chat is gone, so no other view's conversation is
-switched: PATH starts in a new, uniquely named session of its recorded
-cwd, or a live view that already has PATH open is shown.  Return the
-chat buffer."
-  (let* ((dir (pilish--session-file-cwd-or-error path))
-         (number 1))
-    (while (pilish-session-exists-p dir (number-to-string number))
-      (setq number (1+ number)))
-    (let* ((chat-buf (or (pilish--browse-live-session-chat-buffer path)
-                         (pilish-start-session dir (number-to-string number) :session-file path)))
-           (input-buf (buffer-local-value 'pilish--input-buffer chat-buf)))
-      (setq pilish--chat-buffer chat-buf)
-      (quit-window)
-      (pilish--show-session-buffers chat-buf input-buf)
-      chat-buf)))
+(defun pilish--browse-free-session-name (dir)
+  "Return the first free session name in DIR: nil, then \"2\", \"3\", ..."
+  (when (pilish-session-exists-p dir)
+    (let ((number 2))
+      (while (pilish-session-exists-p dir (number-to-string number))
+        (setq number (1+ number)))
+      (number-to-string number))))
+
+(defun pilish--browse-open-in-own-view (path)
+  "Open closed session file PATH in its own view and link this browser.
+Start in the first free session of the file's recorded cwd.  If opening
+or displaying the file fails or is quit, restore the browser's window
+configuration.  Return the chat buffer."
+  (require 'pilish)
+  (let* ((browser (current-buffer))
+         (dir (pilish--session-file-cwd-or-error path))
+         (name (pilish--browse-free-session-name dir))
+         (config (current-window-configuration))
+         shown)
+    (unwind-protect
+        (progn
+          (when (eq (window-buffer) browser)
+            (quit-window))
+          (setq shown (pilish-show-session
+                       (pilish-start-session dir name :session-file path))))
+      (unless shown (set-window-configuration config)))
+    (with-current-buffer browser (setq pilish--chat-buffer shown))
+    shown))
 
 (defun pilish--browse-switch-session (path)
   "Activate a live owner of PATH, or resume PATH in the linked chat.
-A browser whose linked chat buffer was killed opens a closed PATH in a
-fresh view instead (`pilish--browse-open-in-new-view').  Otherwise
+A browser without a live linked chat links to the owner, or opens a
+closed PATH in its own view (`pilish--browse-open-in-own-view').  Otherwise
 guards require a live pi process or signal `user-error', and refuse an
 active session transition.
 `pilish--browse-transition-refused-p' gates both an active
@@ -4760,20 +4772,26 @@ out the transition and dismisses the browser window only when the chat
 landed on PATH; a failed switch leaves the browser open (menu already
 messaged).  No extra refresh logic: \\[pilish-browse-refresh]
 re-derives the \"current\" scope live and the entry point opens a fresh
-browser per project directory."
+browser per project directory.  Return the shown chat buffer, or nil
+after a linked chat's resume request or refusal."
   (if-let* ((owner (pilish--browse-live-session-chat-buffer path)))
-      (let ((browser-window (selected-window))
+      (let ((browser (current-buffer))
+            (browser-window (selected-window))
             (input-buf (buffer-local-value 'pilish--input-buffer owner)))
         (pilish--show-session-buffers owner input-buf)
+        (with-current-buffer browser
+          (unless (buffer-live-p pilish--chat-buffer)
+            (setq pilish--chat-buffer owner)))
         (when (and (window-live-p browser-window)
                    (with-current-buffer (window-buffer browser-window)
                      (derived-mode-p 'pilish-session-browser-mode
                                      'pilish-tree-browser-mode)))
           (save-selected-window
-            (quit-window nil browser-window))))
+            (quit-window nil browser-window)))
+        owner)
     (let ((chat-buf pilish--chat-buffer))
       (if (not (buffer-live-p chat-buf))
-          (pilish--browse-open-in-new-view path)
+          (pilish--browse-open-in-own-view path)
         (let* ((proc (buffer-local-value 'pilish--process chat-buf))
                (input-context (pilish--capture-input-context proc)))
           (unless (pilish--session-live-process-p proc)
@@ -4784,7 +4802,8 @@ browser per project directory."
                  proc chat-buf path input-context)
               (pilish--resume-selected-session proc chat-buf path))
             (pilish--browse-quit-when-settled
-             chat-buf (selected-window) path)))))))
+             chat-buf (selected-window) path))
+          nil)))))
 
 (defun pilish--browse-poll-settled (chat-buf win path deadline)
   "Polling body of `pilish--browse-quit-when-settled'.

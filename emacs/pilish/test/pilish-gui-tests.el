@@ -276,6 +276,8 @@
                       (equal (plist-get command :type) "switch_session"))
                     target-commands))
                   (should (eq (current-buffer) target-input))
+                  (should (eq (buffer-local-value 'pilish--chat-buffer browser)
+                              source-chat))
                   (should (eq (window-buffer (selected-window)) target-input))
                   (should (get-buffer-window target-chat))
                   (should (eq (buffer-local-value 'pilish--process source-chat)
@@ -6059,6 +6061,7 @@ FAILURE permits an expected user error, whose native post hook may not run."
         (when (buffer-live-p browser) (kill-buffer browser))))))
 
 (ert-deftest pilish-gui-test-session-browser-env-directory-without-chat ()
+  "List sessions without Pi, then open the selected file in its recorded cwd."
   (let* ((sandbox (pilish-test--make-temp-directory "pi-gui-env-"))
          (agent (expand-file-name "agent" sandbox))
          (custom (expand-file-name "custom-sessions" sandbox))
@@ -6069,8 +6072,11 @@ FAILURE permits an expected user error, whose native post hook may not run."
          (process-environment (copy-sequence process-environment))
          (pilish-session-browser-default-scope 'current)
          (pilish-session-browser-default-named-only nil)
+         (backend (pilish-gui-test--backend-spec 'fake))
+         (pilish-executable (plist-get backend :executable))
+         (pilish-extra-args (plist-get backend :extra-args))
          (pilish-gui-test--large-trace nil)
-         browser)
+         browser chat)
     (unwind-protect
         (progn
           (make-directory project-a)
@@ -6088,10 +6094,11 @@ FAILURE permits an expected user error, whose native post hook may not run."
                 (with-temp-file path
                   (insert (json-encode
                            (list :type "session" :version 3 :id title
-                                 :cwd cwd :timestamp "2026-01-01T00:00:00Z"))
+                                 :cwd cwd :timestamp "2026-01-01T00:00:00.000Z"))
                           "\n"
                           (json-encode
-                           (list :type "message" :id "first"
+                           (list :type "message" :id "first" :parentId :null
+                                 :timestamp "2026-01-01T00:00:01.000Z"
                                  :message (list :role "user" :content title)))
                           "\n")))))
           (save-window-excursion
@@ -6132,8 +6139,28 @@ FAILURE permits an expected user error, whose native post hook may not run."
                              :chat (pilish--get-chat-buffer)
                              :process-start-guard 'make-process-rejected
                              :text (buffer-string)
-                             :commands (reverse pilish-gui-test--large-trace))))))))))
-      (when (buffer-live-p browser) (kill-buffer browser))
+                             :commands (reverse pilish-gui-test--large-trace))))))
+                (goto-char (point-min))
+                (search-forward "Env project B")
+                (beginning-of-line)
+                (should (equal (pilish--session-browser-path-at-point) path-b))
+                (pilish-gui-test--large-command
+                 (kbd "RET") 'pilish-session-browser-switch)
+                (setq chat (pilish-session-chat-buffer))
+                (should (buffer-live-p chat))
+                (should (eq (window-buffer) (pilish-session-input-buffer chat)))
+                (should (get-buffer-window chat))
+                (should (eq chat (buffer-local-value 'pilish--chat-buffer browser)))
+                (should (equal (pilish-session-directory chat)
+                               (file-name-as-directory project-b)))
+                (should (pilish-test-wait-until
+                         (lambda () (not (pilish--session-transition-active-p chat)))
+                         5 pilish-test-poll-interval (pilish-session-process chat)))
+                (should (equal (pilish-session-file chat) path-b))
+                (with-current-buffer chat
+                  (should (string-match-p "Env project B" (buffer-string))))
+                (should-not (pilish-session-name chat))))))
+      (pilish-test--kill-live-buffers chat browser)
       (delete-directory sandbox t))))
 
 (ert-deftest pilish-gui-test-large-browser-fold-and-copy ()
