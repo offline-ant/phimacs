@@ -14,7 +14,8 @@
 Phimacs is my opinionated setup for [Pi](https://github.com/earendil-works/pi-mono)
 coding agents in Emacs, inspired by Herdr. It uses
 [Pilish](https://github.com/dnouri/pilish) for the Pi chat in Emacs and adds
-the parts around it.
+the parts around it. I made it mostly mouse-driven: frankly, working with AI
+has made me rusty with keyboard shortcuts.
 
 [![Phimacs demo](docs/demo/phimacs.gif)](docs/demo/README.md)
 
@@ -26,9 +27,13 @@ the parts around it.
   Closing Emacs or losing an SSH connection leaves them running. Use Close to
   stop an agent. When the service starts again, for example after a reboot,
   your chats come back idle. Workers and unfinished tasks do not come back.
-- **Workers and terminals.** An agent can give a task to a helper agent, a
-  "worker", and get the result back. It can run servers and long commands in
-  terminals that you can see and use too.
+- **Workers.** An agent can give a task to a helper agent, a "worker":
+  - `do` forks the current chat. The worker knows everything said so far, does
+    the task, and only its final answer goes back to the agent.
+  - `delegate` starts a new agent. It knows only the written brief and the
+    project instructions.
+- **Terminals.** Agents can run servers and long commands in terminals that you
+  can see and use too.
 - **Dictation (optional).** Speak into the chat input or any Emacs buffer: click
   the 🎤 button or press a key. It needs a speech-to-text server.
 
