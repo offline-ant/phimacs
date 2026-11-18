@@ -1,5 +1,8 @@
 # Phimacs development
 
+To install or set up Phimacs for a user, follow docs/install.md. The rest of
+this file is for development.
+
 Phimacs is a checkout-based workspace. Read README.md and docs/development.md.
 The root package.json and package-lock.json own the npm graph and supported Pi.
 

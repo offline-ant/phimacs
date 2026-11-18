@@ -12,7 +12,9 @@ again from another computer.
   own window layout. A sidebar lists all agents and shows which ones need you.
 - **Agents that keep running.** A background service, pimux, runs the agents.
   Closing Emacs or losing an SSH connection does not stop them. Only the Close
-  command stops an agent.
+  command stops an agent. When the service starts again, for example after a
+  reboot, your agents come back idle with their conversations. Unfinished work
+  and workers do not come back.
 - **Workers.** An agent can give a task to a helper agent, a "worker", also on
   another model, and get the result back.
 - **Terminal panels.** Agents can run servers and other long commands in
@@ -38,6 +40,9 @@ Linux only and is tested with Pi 1.5.2. Use the `main` branch.
 ## Get started
 
 **With a coding agent:** point it at the [installation guide](docs/install.md).
+
+**Without Emacs:** the agent tools also work in plain `pi` in Herdr or tmux; see
+[Pi in Herdr or tmux](docs/install.md#pi-in-herdr-or-tmux-without-emacs).
 
 ### Complete Emacs setup
 
@@ -66,35 +71,20 @@ Install only the packages that you want with `use-package :vc`. You do not need
 the theme, completion or keys of the complete setup. See
 [existing Emacs configuration](docs/install.md#existing-emacs-configuration).
 
-### Plain pi in Herdr or tmux, without Emacs
-
-You get workers, terminal panels and the general tools, for example `ask` and
-`py`. You need Linux, Git, Node 24 or newer, and Pi 1.5.2:
-
-```sh
-npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.2  # if you do not have Pi
-git clone https://github.com/offline-ant/phimacs
-phimacs/bin/phimacs setup pi      # add --browser or --sound for those tools
-pi
-```
-
-See [Pi in Herdr or tmux](docs/install.md#pi-in-herdr-or-tmux-without-emacs) for
-options, updates and how to move from the older `pi-ant` or `pi-browser`
-packages.
-
 ## How the parts fit together
 
 ```mermaid
 flowchart LR
-  laptop["Other computer<br/>phimacs over SSH"] --> emacs["Emacs<br/>chats, spaces, terminals"]
+  laptop["Laptop<br/>phimacs over SSH"] --> emacs["Emacs<br/>chats, spaces, terminals"]
   emacs --> pimux["pimux<br/>keeps agents running"]
-  pimux --> agents["Pi agents<br/>with Phimacs tools"]
-  tui["Plain pi in Herdr or tmux<br/>stops with its terminal"] --> agents
+  pimux --> agents["Pi agents<br/>workers, panels, web, voice"]
   agents --> models["Model providers"]
+  laptop -. "microphone, speaker" .-> agents
 ```
 
-In Emacs, pimux runs the agents and Emacs only shows them. Plain `pi` in Herdr or
-tmux needs no pimux, so its agent stops when you close its terminal.
+Emacs runs on one computer, the host. pimux runs the agents there, and Emacs
+only shows them. Other computers open Emacs on the host over SSH and can lend
+it their microphone and speaker.
 
 ## License
 
@@ -109,13 +99,13 @@ model providers, accounts, credentials or personal settings.
 Using Phimacs:
 
 - [Installation](docs/install.md)
-- [Runtime lifecycle](docs/lifecycle.md): what keeps running and what stops
 - [Demo](docs/demo/README.md)
 
 Contributing:
 
 - [Development and focused checks](docs/development.md)
 - [Architecture](docs/architecture.md)
+- [Runtime lifecycle](docs/lifecycle.md)
 - [Runtime protocol](docs/runtime-contract.md)
 - [Pilish upstream maintenance](docs/pilish-upstream.md)
 - [Dependency security](docs/dependency-security.md)
