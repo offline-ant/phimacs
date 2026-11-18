@@ -74,7 +74,8 @@ forces that provider's refresh and selects only the exact `provider/model`.
 Split at the first slash: model IDs can contain slashes. OpenAI and OpenRouter
 are distinct providers; never substitute one for the other.
 
-Switch only when the user asks. The target must be idle, not blocked, and not
+Switch only when the user asks. The target must be idle or a waiting worker
+(`blocked.reason: "worker-waiting"`), have no open dialog, and not be
 yourself. A successful result identifies the `muxId`, `sessionFile`, selected
 `model` and effective `thinkingLevel`. Switching changes no global default and
 sends no prompt. If the user also asks to continue, confirm the model result,

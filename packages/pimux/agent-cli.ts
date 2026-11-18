@@ -11,7 +11,7 @@ import type { DiscoveryRecord } from "./discovery.ts";
 import { isRecord, type JsonRecord } from "./protocol.ts";
 import { runtimeRequest } from "./request.ts";
 import { listRuntimes, lookupTerminalReceipt } from "./runtime-control.ts";
-import type { MuxStatus } from "./state.ts";
+import { acceptsModelChange, type MuxStatus } from "./state.ts";
 
 /** Printed output (JSON value, or text for `--format text`) and the process exit code. */
 export interface AgentResult { output: unknown; exitCode: number }
@@ -270,8 +270,9 @@ async function model(options: Options, env: NodeJS.ProcessEnv): Promise<AgentRes
   const result = await follow(record, options.timeoutMs ?? 30_000, env, (connection, _observed, finish) => {
     if (pending) return;
     const status = connection.status();
-    if (!options.listModels && status.status === "blocked") return finish(failure("agent_blocked", "The agent waits for its user; no model change was sent", EXIT_ERROR, { blocked: status.blocked }));
-    if (!options.listModels && status.status !== "idle") return finish(failure("agent_working", "The agent is working; no model change was sent", EXIT_ERROR, status));
+    if (!options.listModels && !acceptsModelChange(status)) return finish(status.status === "blocked"
+      ? failure("agent_blocked", "The agent waits for its user; no model change was sent", EXIT_ERROR, { blocked: status.blocked })
+      : failure("agent_working", "The agent is working; no model change was sent", EXIT_ERROR, status));
     const sessionFile = connection.session?.file;
     if (!sessionFile || record.piPid === null) return finish(failure("agent_unavailable", "The agent has no committed session"));
     const identity = { muxId: record.muxId, sessionFile };

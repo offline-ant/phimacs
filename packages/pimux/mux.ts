@@ -9,7 +9,7 @@ import {
   ALL_INCLUDES, isReadOnlyCommand, MODELS_COMMAND, parseModelsAction, type ModelsOutcome, parseInputContext, parseIncludes,
   PROTOCOL_VERSION, RUNTIME_CAPABILITIES, SNAPSHOT_COMMAND, type SnapshotData,
 } from "./protocol.ts";
-import { DEFAULT_STATE_LIMITS, MuxState, type StateLimits } from "./state.ts";
+import { acceptsModelChange, DEFAULT_STATE_LIMITS, MuxState, type StateLimits } from "./state.ts";
 
 export type SnapshotReason = "attach" | "request" | "gap" | "session_changed" | "tree_changed";
 
@@ -375,8 +375,9 @@ export class Mux {
       const error = this.inputError(client, record);
       if (error) { refuse(this.pendingModelChange ? "model_change_pending" : "stale_context", error); return; }
       const status = this.state.status();
-      if (status.status !== "idle" || this.pendingInputCount > 0) {
-        refuse(status.status === "blocked" ? "agent_blocked" : "agent_working", "Model changes require an idle, unblocked agent without pending input");
+      const accepted = acceptsModelChange(status);
+      if (!accepted || this.pendingInputCount > 0) {
+        refuse(!accepted && status.status === "blocked" ? "agent_blocked" : "agent_working", "Model changes require an idle, unblocked agent without pending input");
         return;
       }
     } else if (this.options.canAcceptCommands?.() === false || !this.readyClients.has(client.id)

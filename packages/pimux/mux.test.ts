@@ -503,6 +503,11 @@ test("model mutations require current context, idleness and no previously admitt
   assert.equal((fake.sink.records.at(-1)!.error as { code: string }).code, "agent_blocked");
   fake.companion({ kind: "prompts-ended" });
   assert.equal(fake.toPi.length, before);
+  fake.pi({ type: "extension_ui_request", method: "setStatus", statusKey: "worker-frame", statusText: "worker:waiting" });
+  assert.deepEqual(fake.mux.state.status().blocked, { reason: "worker-waiting" });
+  fake.mux.clientLine(fake.client, JSON.stringify(request));
+  assert.equal(fake.toPi.length, before + 1, "a waiting worker accepts a model switch");
+  fake.pi({ type: "response", id: fake.toPi.at(-1)!.id, command: "prompt", success: true, data: { disposition: "handled" } });
   fake.mux.clientLine(fake.client, JSON.stringify({ type: "prompt", message: "pending", pimuxContext: request.pimuxContext }));
   const admitted = fake.toPi.length;
   fake.mux.clientLine(fake.client, JSON.stringify(request));

@@ -142,7 +142,8 @@ Switching forces refresh for the exact selected provider before resolving its
 model ID. `openai/gpt-6.2-sol` and `openrouter/openai/gpt-6.2-sol` are distinct;
 model IDs may contain slashes. Offline mode restores cached catalogs only.
 
-Switches require an idle, unblocked agent, no previously admitted input and the
+Switches require an idle agent or a waiting worker (`blocked.reason:"worker-waiting"`,
+whose run has ended), no open dialog, no previously admitted input and the
 current conversation context. New input is fenced until the operation settles.
 The result identifies the runtime/session and returns either `models` or
 `model` plus effective `thinkingLevel`. Refresh/authentication/unavailable-model

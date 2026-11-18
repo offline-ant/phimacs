@@ -21,6 +21,11 @@ export const DEFAULT_STATE_LIMITS: StateLimits = { tailBytes: 32 * 1024 * 1024, 
 export type MuxStatus = "starting" | "working" | "idle" | "blocked";
 export type Blocked = { reason: "dialog"; method: string; title: string | null } | { reason: "worker-waiting" };
 
+/** True when a model switch may proceed: idle, or a waiting worker, whose run has ended and whose human may switch before continuing. */
+export function acceptsModelChange(status: { status: MuxStatus; blocked: Blocked | null }): boolean {
+  return status.status === "idle" || status.blocked?.reason === "worker-waiting";
+}
+
 interface TailEntry { key: string; record: JsonRecord; bytes: number }
 
 const DELTA_KINDS = new Set(["text_delta", "thinking_delta", "toolcall_delta"]);
