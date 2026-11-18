@@ -22,10 +22,10 @@
   :group 'pi-deck)
 
 (defun pi-deck--ordered-agents (&optional tab-index)
-  "Return agents in sidebar order: space order, then creation order.
+  "Return agents by grouped sidebar space order, then creation order.
 TAB-INDEX caches `pi-deck-tab-index'."
   (let* ((tab-index (or tab-index (pi-deck-tab-index)))
-         (spaces (pi-deck-space-names)))
+         (spaces (mapcan #'cdr (pi-deck--space-sections))))
     (sort (pi-deck-agents)
           :key (lambda (agent)
                  (or (cl-position (pi-deck-agent-space agent tab-index) spaces :test #'equal)

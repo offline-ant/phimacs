@@ -16,6 +16,8 @@ for Pi sessions via Pilish. User documentation: `README.md`.
 | `pi-deck-close.el` | unconfirmed, non-waiting global Close, layout-only Hide, acknowledged parent cancellation, space and peer-view cleanup |
 | `pi-deck-headers.el` | pane title bars (header lines with optional prefix, status, model/context or exit, `[J]` `[↓]` `[⑂]` (Pi) `[⤢]` `[✕]`) |
 | `pi-deck-sidebar.el` | sidebar space tree, incremental text/property refresh, header summary and global cleanup button beside `pi-deck-sidebar-header-items`, shared width, narrow-frame hiding and preferences |
+| `pi-deck-group-editor.el` | bottom side window for staged group creation, membership, rename and dissolve |
+| `pi-deck-group-rows.el` | terminal-cell layout and status buttons for group bands |
 | `pi-deck-usage.el` | optional foldable sidebar usage section: background `pi-deck-usage-command` runs, JSON validation, last-good numbers per account, bar rows |
 | `pi-deck-finished.el` | global finished-worker record and exited-shell cleanup, inactive/active sidebar header button |
 | `pi-deck-menus.el` | popup menus: right-click menus for agents, closed workers and spaces; forking (`pi-deck-fork`) |
@@ -30,6 +32,7 @@ for Pi sessions via Pilish. User documentation: `README.md`.
 | `test/pi-deck-test-fixtures.el` | Shared fixtures: fake Pilish sessions, real ghostel terminals, hidden layout tabs |
 | `test/pi-deck-{status,layout,ui,close,orchestration,persistence}-test.el` | Imported suite parts: status model; spaces/panes; sidebar/title bars/menus; closing; workers/forks/panels; saved state/daemon |
 | `test/pi-deck-sidebar-test.el` | Stable sidebar, focus and finished-fold cleanup regressions |
+| `test/pi-deck-group-{model,editor,sidebar}-test.el` | group persistence, mouse/keyboard checklist, band layout, folding and direct status visits |
 | `test/pi-deck-usage-test.el` | Usage rows at sidebar width, kept numbers and errors, folding, real `sh` fetches and stop |
 | `test/pi-deck-available-test.el` | Available runtime rows, new marks across service restarts, watch start/stop |
 | `test/pi-deck-disclosure-test.el` | UI-lane space disclosure and live/finished worker-title regressions |
@@ -60,7 +63,9 @@ references use `declare-function`.
   left); set tab groups with `pi-deck--set-tab-group`
   (`tab-bar-change-tab-group`'s default hook moves tabs). Remembered layouts
   are `window-state-get` of `window-main-window`, so side windows (the
-  sidebar) are never part of them.
+  sidebar) are never part of them. Sidebar space groups are independent of
+  tab groups: `:group` on a space record is its optional sidebar heading,
+  not the name or owner of its layout tab.
 - Never write the user's init files; preferences and state live under
   `user-emacs-directory`/var/pi-deck/.
 - Tests never call paid models: ERT uses fake sessions, smoke uses Pi's faux

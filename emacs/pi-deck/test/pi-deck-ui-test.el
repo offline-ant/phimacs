@@ -342,7 +342,7 @@ MARK is `shown' (highlighted: the frame shows it) or nil."
             (let ((text (buffer-substring-no-properties (point-min) (point-max))))
               (should (string-match-p "\\`▾ two (0) ○ \\+\n" text))
               (should (string-match-p "^▾ space (2) ○ \\+\n ○ a ✕\n   ○ p ✕\n" text))
-              (should (string-match-p "\n\\+ New space\n\\'" text))))
+              (should (string-suffix-p "\n+ New space  + New Group\n" text))))
           ;; The current space's name is highlighted.
           (should (eq (get-text-property (with-current-buffer (window-buffer sidebar)
                                            (pi-deck-test--space-name-position "space")) 'face

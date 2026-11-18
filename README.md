@@ -22,7 +22,9 @@ has made me rusty with keyboard shortcuts.
 ## What it adds
 
 - **Project spaces.** Each project has its own space with its own window
-  layout. A sidebar lists all agents and shows which ones need you.
+  layout. A sidebar lists all agents and shows which ones need you. You can
+  [group related spaces](emacs/pi-deck/README.md#space-groups) and jump to a
+  result even when its group is folded.
 - **Agents that keep running.** A background service, pimux, runs the agents.
   Closing Emacs or losing an SSH connection leaves them running. Use Close to
   stop an agent. When the service starts again, for example after a reboot,

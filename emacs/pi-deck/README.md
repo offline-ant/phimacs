@@ -42,6 +42,29 @@ shell or Dired (`pi-deck-new-space-action`). A frame opening a space starts with
 last remembered layout, else the directory. Layouts remain frame-local while open;
 the most recently remembered layout seeds another frame.
 
+## Space groups
+
+With two or more spaces, the sidebar offers **+ New Group** beside **+ New space**.
+Click it, type a name, click the spaces you want, then click **Create (3)** to
+group three checked spaces. No modifier keys are needed. The checklist shows
+each space's existing group, if any. Cancel leaves everything unchanged.
+A space can belong to one group or stay ungrouped. Groups organize the sidebar
+only: they do not own directories, layouts or agents.
+
+Click a group's name or the blank part of its colored band to fold or unfold
+it. Member spaces keep their usual indentation. Status buttons stay visible
+when folded: in `Lace      ◉ ● 2`, one agent is blocked and two have unseen
+results. Click `● 2` to visit a result directly without unfolding Lace.
+Visiting the result clears its done mark; folding and unfolding do not.
+A single result shows just `●`. When space is tight, lower-priority buttons
+drop first; the sidebar header still covers all spaces.
+
+Right-click a band to rename the group, change its members, or **Dissolve group**.
+Dissolving leaves every space open. Membership is saved with the spaces;
+fold state lasts for the session. The same checklist is available with
+`M-x pi-deck-new-group` and `M-x pi-deck-edit-group`; Tab moves through it
+and Return activates a button.
+
 ## Sidebar and attention
 
 The sidebar is shown in frames with room for its width plus

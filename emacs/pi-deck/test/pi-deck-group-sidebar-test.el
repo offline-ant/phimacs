@@ -1,0 +1,178 @@
+;;; pi-deck-group-sidebar-test.el --- Terminal group bands and mouse targets -*- lexical-binding: t; -*-
+;; SPDX-License-Identifier: MIT
+
+(require 'pi-deck-sidebar-test)
+
+(ert-deftest pi-deck-group-sidebar-cell-budget ()
+  (let ((agents (list (pi-deck-agent--make :state 'blocked)
+                      (pi-deck-agent--make :state 'idle :seen nil)
+                      (pi-deck-agent--make :state 'idle :seen nil)
+                      (pi-deck-agent--make :state 'working))))
+    (dolist (width '(1 3 7 14 26))
+      (let ((band (string-remove-suffix "\n" (pi-deck-group-row "東京-Lace" agents nil
+                                                                '(blocked done working) width t))))
+        (should (= width (string-width band)))
+        (should (equal (get-text-property 0 'pi-deck-group band) "東京-Lace"))
+        (when (= width 26)
+          (should (string-suffix-p "◉ ● 2 ◐" band))
+          ;; The leading cell, glyph, internal space and count are one target.
+          (let ((start (string-search " ●" band)))
+            (dotimes (n 4)
+              (should (eq (get-text-property (+ start n) 'pi-deck-group-status band) 'done)))))
+        (when (= width 3) (should (string-suffix-p " ◉" band)))))))
+
+(ert-deftest pi-deck-group-sidebar-interleaved-fold-jump-and-edit ()
+  (pi-deck-sidebar-test--with-view
+    (setq pi-deck-spaces '((:name "pi" :group "Env") (:name "sn" :group "Lace")
+                            (:name "odd") (:name "devices" :group "Env")
+                            (:name "supaplex" :group "Lace") (:name "loose")))
+    (let ((outside (pi-deck-sidebar-test--shell 1))
+          (target (pi-deck-sidebar-test--shell 2))
+          (sibling (pi-deck-sidebar-test--shell 3))
+          visited edited)
+      (setf (pi-deck-agent-assigned-space outside) "pi" (pi-deck-agent-seen outside) nil
+            (pi-deck-agent-changed outside) 10
+            (pi-deck-agent-assigned-space target) "supaplex" (pi-deck-agent-seen target) nil
+            (pi-deck-agent-changed target) 3
+            (pi-deck-agent-assigned-space sibling) "sn" (pi-deck-agent-seen sibling) nil
+            (pi-deck-agent-changed sibling) 1)
+      (with-current-buffer buffer
+        (pi-deck-sidebar-refresh)
+        (should (equal (cl-loop for line in (split-string (buffer-string) "\n" t)
+                                for key = (or (get-text-property 0 'pi-deck-space line)
+                                              (get-text-property 0 'pi-deck-group line))
+                                when key collect key)
+                       '("odd" "loose" "Env" "pi" "devices" "Lace" "sn" "supaplex")))
+        (goto-char (point-min))
+        (let* ((name (search-forward "Lace"))
+               (click (lambda (column) (list 'mouse-1 (list sidebar column '(0 . 0) 0)))))
+          (pi-deck-sidebar-mouse-1 (funcall click name)) ; padding folds too
+          (should (eq (selected-window) main))
+          (should-not (pi-deck-sidebar-test--row buffer target))
+          (should (pi-deck-sidebar-test--row buffer outside))
+          (goto-char name)
+          (let ((badge (1- (search-forward "● 2" (line-end-position)))))
+            (cl-letf (((symbol-function 'pi-deck-jump) (lambda (agent) (setq visited agent)))
+                      ((symbol-function 'pi-deck-edit-group) (lambda (group) (setq edited group))))
+              (pi-deck-sidebar-mouse-1 (funcall click badge))
+              (should (eq visited target))
+              (should (equal pi-deck-sidebar--collapsed-groups '("Lace")))
+              (setf (pi-deck-agent-seen target) t)
+              ;; An unseen result can change even before the next redraw.
+              (pi-deck-sidebar-mouse-1 (funcall click badge))
+              (should (eq visited sibling))
+              (pi-deck-sidebar-mouse-3 (funcall click badge))
+              (should (equal edited "Lace")))))))))
+
+(ert-deftest pi-deck-group-sidebar-cycle-interleaved-members ()
+  (pi-deck-sidebar-test--with-view
+    (let* ((pi-deck-spaces '((:name "pi" :group "Env") (:name "odd")
+                             (:name "devices" :group "Env")))
+           (loose (pi-deck-sidebar-test--shell 1))
+           (device (pi-deck-sidebar-test--shell 2))
+           (first (pi-deck-sidebar-test--shell 3))
+           (second (pi-deck-sidebar-test--shell 4))
+           (current nil))
+      (setf (pi-deck-agent-assigned-space first) "pi"
+            (pi-deck-agent-assigned-space second) "pi"
+            (pi-deck-agent-assigned-space loose) "odd"
+            (pi-deck-agent-assigned-space device) "devices")
+      (pi-deck-sidebar-refresh buffer)
+      (let ((rows (mapcar (lambda (agent) (pi-deck-sidebar-test--row buffer agent))
+                          (list loose first second device))))
+        (should (apply #'< rows)))
+      (cl-letf (((symbol-function 'pi-deck--current-agent) (lambda () current))
+                ((symbol-function 'pi-deck-jump) (lambda (agent) (setq current agent))))
+        (dolist (next (list loose first second device loose))
+          (pi-deck-next-agent)
+          (should (eq current next)))
+        (dolist (previous (list device second first loose))
+          (pi-deck-previous-agent)
+          (should (eq current previous)))))))
+
+(ert-deftest pi-deck-group-sidebar-new-runtime-attaches-only-on-badge-click ()
+  (pi-deck-sidebar-test--with-view
+    (let* ((pi-deck-spaces '((:name "one" :dir "/tmp/one/" :group "G")
+                             (:name "two" :dir "/tmp/two/")))
+           (mine '(:directory "/tmp/one/"))
+           (outside '(:directory "/tmp/two/" :session-name "outside"))
+           attached)
+      (with-current-buffer buffer
+        (cl-letf (((symbol-function 'pi-deck-available-new-p) (lambda (_) t))
+                  ((symbol-function 'pi-deck-available-runtimes) (lambda () (list mine outside)))
+                  ((symbol-function 'pi-deck-attach-available) (lambda (target) (setq attached target))))
+          (setq pi-deck-sidebar--collapsed-groups '("G"))
+          (pi-deck-sidebar-refresh)
+          (goto-char (point-min))
+          (re-search-forward "^G ")
+          (let ((badge (1- (search-forward "✦" (line-end-position)))))
+            (should-not attached)
+            (pi-deck-sidebar-mouse-1 (list 'mouse-1 (list sidebar badge '(0 . 0) 0)))
+            (should (eq attached mine))
+            (should (equal pi-deck-sidebar--collapsed-groups '("G")))))))))
+
+(ert-deftest pi-deck-group-sidebar-detached-states-and-click-targets ()
+  (pi-deck-sidebar-test--with-view
+    (let* ((pi-deck-spaces '((:name "one" :dir "/tmp/one/" :group "G")
+                             (:name "two" :dir "/tmp/two/")))
+           (tracked (pi-deck-sidebar-test--shell 1))
+           (blocked '(:directory "/tmp/one/" :blocked t :state "idle"))
+           (working '(:directory "/tmp/one/" :state "working"))
+           (idle '(:directory "/tmp/one/" :state "idle"))
+           (outside '(:directory "/tmp/two/" :state "blocked" :session-name "outside"))
+           (snapshot (list blocked working idle outside))
+           target)
+      (setf (pi-deck-agent-assigned-space tracked) "one" (pi-deck-agent-state tracked) 'blocked)
+      (cl-letf (((symbol-function 'pi-deck-available-runtimes) (lambda () snapshot))
+                ((symbol-function 'pi-deck-jump) (lambda (agent) (setq target agent)))
+                ((symbol-function 'pi-deck-attach-available) (lambda (runtime) (setq target runtime))))
+        (with-current-buffer buffer
+          (setq pi-deck-sidebar--collapsed-groups '("G"))
+          (pi-deck-sidebar-refresh)
+          (goto-char (point-min))
+          (re-search-forward "^G ")
+          (beginning-of-line)
+          ;; Idle has no unseen history; only the two advertised active states roll up.
+          (should (string-match-p "\\`G +◉ 2 ◐\\'" (buffer-substring (point) (line-end-position))))
+          (let* ((badge (1- (search-forward "◉" (line-end-position))))
+                 (run (1- (search-forward "◐" (line-end-position))))
+                 (click (lambda (pos) (pi-deck-sidebar-mouse-1
+                                       (list 'mouse-1 (list sidebar pos '(0 . 0) 0))))))
+            (should-not target)
+            (funcall click (1- badge)) ; preceding blank cell is clickable
+            (should (eq target tracked))
+            (setf (pi-deck-agent-state tracked) 'idle)
+            (funcall click (1- badge))
+            (should (eq target blocked))
+            (funcall click (1- run))
+            (should (eq target working))
+            ;; A stale badge cannot attach an idle runtime or one outside the group.
+            (setq snapshot (list idle outside) target nil)
+            (funcall click badge)
+            (should-not target)
+            (should (equal pi-deck-sidebar--collapsed-groups '("G")))))))))
+
+(ert-deftest pi-deck-group-sidebar-footer-after-second-space ()
+  (pi-deck-sidebar-test--with-view
+    (let ((pi-deck-sidebar-width 28) called)
+      (with-current-buffer buffer
+        (setq pi-deck-spaces '((:name "first")))
+        (pi-deck-sidebar-refresh)
+        (should (string-suffix-p "+ New space\n" (buffer-string)))
+        (push '(:name "second") pi-deck-spaces)
+        (pi-deck-sidebar-refresh)
+        (should (string-suffix-p "+ New space  + New Group\n" (buffer-string)))
+        (cl-letf (((symbol-function 'pi-deck-new-group) (lambda () (interactive) (setq called 'group)))
+                  ((symbol-function 'pi-deck-create-space) (lambda () (interactive) (setq called 'space))))
+          (dolist (entry '(("space" . space) ("Group" . group)))
+            (goto-char (point-max))
+            (search-backward (car entry))
+            (pi-deck-sidebar-mouse-1 (list 'mouse-1 (list sidebar (point) '(0 . 0) 0)))
+            (should (eq called (cdr entry)))
+            (should (eq (selected-window) main))))
+        (let ((pi-deck-sidebar-width 18))
+          (pi-deck-sidebar-refresh)
+          (should (string-suffix-p "+ New space\n+ New Group\n" (buffer-string))))))))
+
+(provide 'pi-deck-group-sidebar-test)
+;;; pi-deck-group-sidebar-test.el ends here

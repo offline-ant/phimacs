@@ -72,7 +72,7 @@ async function ertLane() {
       '--eval', `(ert-run-tests-batch-and-exit ${index < 0 ? '"^pi-orchestration-"' : selector})`);
   } else {
     const suites = flag('--ui') ? ['pi-deck-test', 'pi-deck-disclosure-test'] : ['pi-deck-detached-test', 'pi-deck-available-test'];
-    for (const suite of [...suites, 'pi-deck-finished-test', 'pi-deck-sidebar-test', 'pi-deck-usage-test']) args.push('-l', suite);
+    for (const suite of [...suites, 'pi-deck-finished-test', 'pi-deck-sidebar-test', 'pi-deck-usage-test']) args.push('--eval', `(require '${suite})`);
     args.push('--eval', `(ert-run-tests-batch-and-exit ${selector})`);
   }
   try {

@@ -210,7 +210,11 @@ PRESERVE-STATE prevents an unsuccessful enable from overwriting saved state."
     (pi-deck--remove-header buffer)
     (with-current-buffer buffer
       (remove-hook 'after-change-functions #'pi-deck-schedule-save t)))
-  (pi-deck--sidebar-remove-all))
+  (let ((editors (seq-filter (lambda (buffer)
+                               (eq (buffer-local-value 'major-mode buffer) 'pi-deck-group-editor-mode))
+                             (buffer-list))))
+    (pi-deck--remove-side-windows (delq nil (cons (get-buffer pi-deck-sidebar-buffer-name) editors)))
+    (mapc #'kill-buffer editors)))
 
 ;;;###autoload
 (define-minor-mode pi-deck-mode

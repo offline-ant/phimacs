@@ -6,7 +6,8 @@
 
 ;; A space is a project directory with one window layout, whose panes are
 ;; windows showing Pilish chats (with their input) or ghostel terminals.
-;; The space registry (name and directory) is global.  Each frame keeps a
+;; The space registry (name, directory and optional sidebar group) is global.
+;; Sidebar groups organize spaces, not layouts or tab-bar tabs.  Each frame keeps a
 ;; space's live layout in a hidden `tab-bar' tab whose group is the space
 ;; name (`tab-bar-show' is nil while `pi-deck-mode' is on), so switching
 ;; spaces switches tabs.  `pi-deck--layouts' keeps the last layout of every
@@ -38,7 +39,8 @@ that integration, so its status needs its own prompt marks."
   :group 'pi-deck)
 
 (defvar pi-deck-spaces nil
-  "Registered spaces: plists with :name and :dir, in creation order.")
+  "Registered spaces in creation order, with :name, :dir and optional :group.
+A nil group means the space is ungrouped.")
 
 (defvar pi-deck--layouts nil
   "Alist of space names and their last known writable window states.
@@ -65,13 +67,46 @@ Nil means ghostel's default shell.")
   "Return space NAME's directory, or nil."
   (plist-get (pi-deck-space name) :dir))
 
-(defun pi-deck--register-space (name dir)
-  "Register space NAME with directory DIR, replacing an older entry."
+(defun pi-deck--group-name (name)
+  "Return a trimmed, single-line group NAME, or nil for no group."
+  (when name
+    (unless (and (stringp name) (not (string-match-p "[[:cntrl:]]" name))
+                 (not (string-blank-p name)))
+      (user-error "Group name must be nonblank and contain no control characters"))
+    (substring-no-properties (string-trim name))))
+
+(cl-defun pi-deck--register-space
+    (name dir &optional (group (plist-get (pi-deck-space name) :group)))
+  "Register space NAME with directory DIR and optional sidebar GROUP.
+Replacing an older entry keeps its group unless GROUP is supplied."
   (setq pi-deck-spaces
         (append (cl-remove name pi-deck-spaces
                            :key (lambda (space) (plist-get space :name)) :test #'equal)
                 (list (list :name name :dir (and dir (file-name-as-directory
-                                                      (expand-file-name dir))))))))
+                                                      (expand-file-name dir)))
+                            :group (pi-deck--group-name group))))))
+
+(defun pi-deck-set-space-group (name spaces &optional original)
+  "Put SPACES (a nonempty list of registered space names) in group NAME.
+Nil NAME ungroups them.  When editing group ORIGINAL, its omitted members
+become ungrouped.  Groups exist only while they have members.
+Validate the whole selection before changing anything; leave the order,
+layouts and current space alone.  Return non-nil if membership changed."
+  (let ((group (pi-deck--group-name name)) changed)
+    (unless (and spaces (proper-list-p spaces)) (user-error "Select at least one space"))
+    (dolist (space spaces)
+      (unless (pi-deck-space space) (user-error "Unknown space: %s" space)))
+    (cl-loop for tail on pi-deck-spaces
+             for record = (car tail)
+             for old = (plist-get record :group)
+             for new = (cond ((member (plist-get record :name) spaces) group)
+                             ((equal old original) nil)
+                             (t old))
+             unless (equal old new)
+             do (setf (plist-get (car tail) :group) new)
+             (setq changed t))
+    (when changed (pi-deck--schedule-update))
+    changed))
 
 (defun pi-deck--tabs (&optional frame)
   "Return FRAME's tabs."
@@ -91,6 +126,20 @@ deck keeps it."
 (defun pi-deck-space-names ()
   "Return the registered space names in creation order."
   (mapcar (lambda (space) (plist-get space :name)) pi-deck-spaces))
+
+(defun pi-deck--space-sections ()
+  "Return (GROUP NAME...) sections, ungrouped spaces before group blocks.
+Each ungrouped space has a section with GROUP nil.  Groups appear in
+first-member order; spaces within each part retain their registry order."
+  (let (ungrouped groups)
+    (dolist (space pi-deck-spaces)
+      (let ((group (plist-get space :group)) (name (plist-get space :name)))
+        (if (null group) (push (list nil name) ungrouped)
+          (if-let* ((section (assoc group groups)))
+              (push name (cdr section))
+            (push (list group name) groups)))))
+    (dolist (section groups) (setcdr section (nreverse (cdr section))))
+    (nconc (nreverse ungrouped) (nreverse groups))))
 
 (defun pi-deck-current-space (&optional frame)
   "Return the space FRAME shows, or nil."

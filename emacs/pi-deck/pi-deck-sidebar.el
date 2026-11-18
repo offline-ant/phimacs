@@ -28,6 +28,8 @@
 (require 'pi-deck-core)
 (require 'pi-deck-spaces)
 (require 'pi-deck-available)
+(require 'pi-deck-group-rows)
+(require 'pi-deck-group-editor)
 (require 'pi-deck-workers)
 (require 'pi-deck-close)
 (require 'pi-deck-finished)
@@ -98,6 +100,9 @@ to a command reading (interactive \"e\")."
 
 (defvar-local pi-deck-sidebar--collapsed nil
   "Space names whose agents are hidden.")
+
+(defvar-local pi-deck-sidebar--collapsed-groups nil
+  "Group names whose spaces are hidden; independent of space folds.")
 
 (defvar-local pi-deck-sidebar--expanded-workers nil
   "Parent agent buffers whose closed workers are listed.")
@@ -307,32 +312,49 @@ and its `+' opens the space's menu."
       'pi-deck-space name)
      "mouse-1: switch to this space; mouse-3: menu")))
 
+(defun pi-deck-sidebar--width ()
+  "Return the usable text columns of the narrowest visible sidebar."
+  (max 1 (if-let* ((buffer (get-buffer pi-deck-sidebar-buffer-name))
+                   (windows (get-buffer-window-list buffer nil t)))
+             (apply #'min (mapcar #'window-max-chars-per-line windows))
+           (- pi-deck-sidebar-width 3))))
+
 (defun pi-deck-sidebar--insert-spaces (agents tab-index &optional available)
   "Insert AGENTS by home space (TAB-INDEX caches `pi-deck-tab-index').
 Each space lists its agents in their stable creation order, workers and
 panels under their parent, then its AVAILABLE runtimes (live without a
 view here), and folds its finished shells into one row; agents without a
 space come last, under \"other\"."
-  (dolist (space (append (pi-deck-space-names) (list nil)))
-    (let ((members (cl-remove-if-not
-                    (lambda (agent) (equal (pi-deck-agent-space agent tab-index) space))
-                    agents))
-          (runtimes (seq-filter (lambda (runtime)
-                                  (equal (pi-deck-available-space runtime) space))
-                                available)))
-      (when (or space members runtimes)
-        (insert (pi-deck-sidebar--space-header
-                 space (pi-deck-rollup (mapcar #'pi-deck-agent-status members))
-                 (length members)))
-        (unless (member (or space "other") pi-deck-sidebar--collapsed)
-          (dolist (item (pi-deck-sidebar--tree
-                         (seq-remove #'pi-deck-agent-finished-shell-p members)))
-            (insert (pi-deck-sidebar--agent-line (car item) (cdr item)))
-            (pi-deck-sidebar--insert-finished (car item) (1+ (cdr item))))
-          (dolist (runtime runtimes)
-            (insert (pi-deck-sidebar--available-line runtime)))
-          (pi-deck-sidebar--insert-finished-shells
-           (or space "other") (seq-filter #'pi-deck-agent-finished-shell-p members)))))))
+  (let ((homes (seq-group-by (lambda (agent) (pi-deck-agent-space agent tab-index)) agents))
+        (runtime-homes (seq-group-by #'pi-deck-available-space available))
+        (width (pi-deck-sidebar--width)))
+    (dolist (section (pi-deck--space-sections))
+      (let* ((group (car section)) (names (cdr section))
+             (folded (and group (member group pi-deck-sidebar--collapsed-groups))))
+        (when group
+          (insert (pi-deck-sidebar--clickable
+                   (pi-deck-group-row
+                    group (cl-loop for n in names append (cdr (assoc n homes)))
+                    (cl-loop for n in names append (cdr (assoc n runtime-homes)))
+                    pi-deck-summary-statuses width folded)
+                   "mouse-1: fold or unfold; mouse-3: edit group")))
+        (unless folded
+          (dolist (name names)
+            (pi-deck-sidebar--insert-space name (cdr (assoc name homes)) (cdr (assoc name runtime-homes)))))))
+    (when (or (assq nil homes) (assq nil runtime-homes))
+      (pi-deck-sidebar--insert-space nil (cdr (assq nil homes)) (cdr (assq nil runtime-homes))))))
+
+(defun pi-deck-sidebar--insert-space (space members runtimes)
+  "Insert SPACE's header and its unfolded MEMBERS and RUNTIMES."
+  (insert (pi-deck-sidebar--space-header
+           space (pi-deck-rollup (mapcar #'pi-deck-agent-status members)) (length members)))
+  (unless (member (or space "other") pi-deck-sidebar--collapsed)
+    (dolist (item (pi-deck-sidebar--tree (seq-remove #'pi-deck-agent-finished-shell-p members)))
+      (insert (pi-deck-sidebar--agent-line (car item) (cdr item)))
+      (pi-deck-sidebar--insert-finished (car item) (1+ (cdr item))))
+    (dolist (runtime runtimes) (insert (pi-deck-sidebar--available-line runtime)))
+    (pi-deck-sidebar--insert-finished-shells
+     (or space "other") (seq-filter #'pi-deck-agent-finished-shell-p members))))
 
 (defun pi-deck-summary-string (&optional summary short)
   "Return a status summary like \"◉ 2 blocked · ● 1 done\" for SUMMARY.
@@ -385,6 +407,9 @@ its cursor at the adjacent surviving text."
          (agents (pi-deck-agents))
          (tab-index (pi-deck-tab-index))
          (collapsed pi-deck-sidebar--collapsed)
+         (groups (seq-filter (lambda (name) (seq-some (lambda (space) (equal (plist-get space :group) name))
+                                                      pi-deck-spaces))
+                             pi-deck-sidebar--collapsed-groups))
          (expanded-workers (seq-filter #'pi-deck-finished-workers
                                        pi-deck-sidebar--expanded-workers))
          (expanded-shells
@@ -398,20 +423,19 @@ its cursor at the adjacent surviving text."
                  (mapcar #'window-buffer (window-list nil 'no-minibuf)))))
     ;; Empty finished groups should not reopen expanded when new work ends.
     ;; A failed cleanup still has entries, so its expansion state survives.
-    (setq pi-deck-sidebar--expanded-workers expanded-workers
+    (setq pi-deck-sidebar--collapsed-groups groups
+          pi-deck-sidebar--expanded-workers expanded-workers
           pi-deck-sidebar--expanded-shells expanded-shells
           pi-deck-sidebar--shown shown)
     (with-temp-buffer
       (let ((pi-deck-sidebar--collapsed collapsed)
+            (pi-deck-sidebar--collapsed-groups groups)
             (pi-deck-sidebar--expanded-workers expanded-workers)
             (pi-deck-sidebar--expanded-shells expanded-shells)
             (pi-deck-sidebar--current-space current-space)
             (pi-deck-sidebar--shown shown))
         (pi-deck-sidebar--insert-spaces agents tab-index (pi-deck-available-runtimes))
-        (insert "\n" (pi-deck-sidebar--clickable
-                      (propertize (concat (propertize "+ New space" 'face 'link) "\n")
-                                  'pi-deck-action #'pi-deck-create-space)
-                      "mouse-1: create a space for a project directory"))
+        (insert "\n" (pi-deck-sidebar--footer))
         (pi-deck-usage-insert))
       (let ((rendered (current-buffer)))
         (with-current-buffer sidebar
@@ -427,6 +451,18 @@ its cursor at the adjacent surviving text."
                   (setq position next))))))))
     (dolist (window (get-buffer-window-list sidebar nil t))
       (pi-deck-sidebar--top-if-fits window))))
+
+(defun pi-deck-sidebar--footer ()
+  "Return create buttons, stacked only if the sidebar is narrow."
+  (let* ((space (propertize "+ New space" 'face 'link 'pi-deck-action #'pi-deck-create-space
+                            'help-echo "mouse-1: create a space for a project directory"))
+         (group (propertize "+ New Group" 'face 'link 'pi-deck-action #'pi-deck-new-group
+                            'help-echo "mouse-1: group spaces")))
+    (pi-deck-sidebar--clickable
+     (concat space (when (cdr pi-deck-spaces)
+                     (concat (if (<= (+ (string-width space) 2 (string-width group))
+                                     (pi-deck-sidebar--width)) "  " "\n") group)) "\n")
+     "")))
 
 (defun pi-deck-sidebar--top-if-fits (window)
   "Show the sidebar in WINDOW from its first row when all its rows fit.
@@ -485,8 +521,13 @@ worker, show its closed workers or finished shells, or jump to its agent."
   (interactive)
   (let ((position (line-beginning-position)))
     (cond
-     ((get-text-property position 'pi-deck-action)
-      (call-interactively (get-text-property position 'pi-deck-action)))
+     ((get-text-property (point) 'pi-deck-action)
+      (call-interactively (get-text-property (point) 'pi-deck-action)))
+     ((get-text-property (point) 'pi-deck-group-status)
+      (pi-deck-sidebar--visit-status (get-text-property position 'pi-deck-group)
+                                     (get-text-property (point) 'pi-deck-group-status)))
+     ((get-text-property position 'pi-deck-group) (pi-deck-sidebar-toggle-fold))
+     ((get-text-property position 'pi-deck-action) nil)
      ((get-text-property position 'pi-deck-worker-record)
       (pi-deck-open-finished-worker (get-text-property position 'pi-deck-worker-record)))
      ((get-text-property position 'pi-deck-space)
@@ -498,6 +539,22 @@ worker, show its closed workers or finished shells, or jump to its agent."
      ((get-text-property position 'pi-deck-available)
       (pi-deck-attach-available (get-text-property position 'pi-deck-available)))
      (t (pi-deck-jump (pi-deck-sidebar--agent-at-point))))))
+
+(defun pi-deck-sidebar--visit-status (group status)
+  "Visit a matching agent in GROUP, or explicitly attach a matching runtime.
+Prefer the newest tracked match.  Resolve STATUS again at click time."
+  (let* ((homes (cl-loop for space in pi-deck-spaces when (equal group (plist-get space :group))
+                         collect (plist-get space :name)))
+         (index (pi-deck-tab-index))
+         (agents (cl-loop for a in (pi-deck-agents)
+                          when (and (eq (pi-deck-agent-status a) status)
+                                    (member (pi-deck-agent-space a index) homes)) collect a)))
+    (if agents (pi-deck-jump (car (sort agents :key #'pi-deck-agent-changed :lessp #'>)))
+      (if-let* ((runtime (seq-find (lambda (r) (and (pi-deck-group-runtime-status-p r status)
+                                                    (member (pi-deck-available-space r) homes)))
+                                   (reverse (pi-deck-available-runtimes)))))
+          (pi-deck-attach-available runtime)
+        (message "No %s target in %s" status group)))))
 
 (defun pi-deck-sidebar--clear-workers (parent)
   "Clear the closed workers listed under PARENT's buffer."
@@ -532,6 +589,13 @@ Buttons leave the selected window alone; lines act like \\[pi-deck-sidebar-jump]
           ('space-menu (pi-deck-popup (pi-deck-space-menu (get-text-property row 'pi-deck-space))
                                       event))
           ('usage-fetch (pi-deck-usage-fetch))
+          ((guard (get-text-property position 'pi-deck-group-status))
+           (pi-deck-sidebar--visit-status (get-text-property row 'pi-deck-group)
+                                          (get-text-property position 'pi-deck-group-status)))
+          ((guard (get-text-property row 'pi-deck-group))
+           (save-excursion (goto-char row) (pi-deck-sidebar-toggle-fold)))
+          ((guard (get-text-property position 'pi-deck-action))
+           (call-interactively (get-text-property position 'pi-deck-action)))
           ;; The press position, not a drag's end.
           (_ (posn-set-point posn)
              (pi-deck-sidebar-jump)))))))
@@ -563,7 +627,9 @@ The first click already jumped to it; buttons ignore double clicks."
                  (let ((agent (get-text-property position 'pi-deck-agent))
                        (space (get-text-property position 'pi-deck-space))
                        (record (get-text-property position 'pi-deck-worker-record)))
-                   (cond (agent (pi-deck-agent-menu agent))
+                   (cond ((get-text-property position 'pi-deck-group)
+                          (pi-deck-edit-group (get-text-property position 'pi-deck-group)) nil)
+                         (agent (pi-deck-agent-menu agent))
                          ((and space (pi-deck-space space)) (pi-deck-space-menu space))
                          (record (pi-deck-finished-worker-menu record)))))))
     (when menu (pi-deck-popup menu event))))
@@ -573,9 +639,14 @@ The first click already jumped to it; buttons ignore double clicks."
 things at point."
   (interactive)
   (let* ((row (line-beginning-position))
+         (group (get-text-property row 'pi-deck-group))
          (parent (get-text-property row 'pi-deck-finished))
          (shells (get-text-property row 'pi-deck-finished-shells)))
     (cond
+     (group (setq pi-deck-sidebar--collapsed-groups
+                  (if (member group pi-deck-sidebar--collapsed-groups)
+                      (delete group pi-deck-sidebar--collapsed-groups)
+                    (cons group pi-deck-sidebar--collapsed-groups))))
      ((get-text-property row 'pi-deck-usage) (pi-deck-usage-toggle-fold))
      (parent
       (setq pi-deck-sidebar--expanded-workers
@@ -771,11 +842,11 @@ It shows when `pi-deck-sidebar' is on and the frame fits it."
           ((and window (not wanted)) (delete-window window))
           (window (pi-deck--sidebar-set-width window)))))
 
-(defun pi-deck--sidebar-remove-all ()
-  "Remove deck side windows from all frame tabs without killing buffers.
+(defun pi-deck--remove-side-windows (buffers)
+  "Remove side windows showing BUFFERS from all frame tabs.
 A hidden tab also retains its side windows, so clean each saved layout and
-restore the original selected tab rather than leaving a sidebar to reappear."
-  (when-let* ((buffer (get-buffer pi-deck-sidebar-buffer-name)))
+restore the original selected tab."
+  (when buffers
     (dolist (frame (frame-list))
       (with-selected-frame frame
         (let* ((tabs (tab-bar-tabs))
@@ -783,8 +854,10 @@ restore the original selected tab rather than leaving a sidebar to reappear."
           (unwind-protect
               (dotimes (index (length tabs))
                 (when (> (length tabs) 1) (pi-deck--select-tab (1+ index)))
-                (dolist (window (get-buffer-window-list buffer nil frame))
-                  (when (window-parameter window 'window-side) (delete-window window))))
+                (dolist (window (window-list frame 'no-minibuf))
+                  (when (and (window-parameter window 'window-side)
+                             (memq (window-buffer window) buffers))
+                    (delete-window window))))
             (when (> (length tabs) 1) (pi-deck--select-tab current))))))))
 
 (defvar pi-deck--sidebar-resize-timers nil
