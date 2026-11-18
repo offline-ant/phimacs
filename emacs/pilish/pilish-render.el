@@ -1665,7 +1665,6 @@ and a window displays it there.  Return the buffer."
   "Handle setStatus method from EVENT."
   (let ((key (plist-get event :statusKey))
         (text (plist-get event :statusText)))
-    (pilish--note-extension-ui 'status key)
     (when text
       (setq text (ansi-color-filter-apply
                   (pilish--render-safe-string text))))

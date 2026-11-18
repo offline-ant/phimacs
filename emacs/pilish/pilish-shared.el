@@ -196,10 +196,7 @@ Suspend local work bound to CONTEXT without losing the authoritative identity."
           (dolist (request (pilish--extension-dialog-pending proc))
             (when (plist-get request :pilish-stale)
               (pilish--extension-dialog-close proc (plist-get request :id))))
-          (pcase-dolist (`(,kind . ,key) (process-get proc 'pilish-mux-stale-ui))
-            (if (eq kind 'status)
-                (pilish--extension-ui-set-status (list :statusKey key))
-              (pilish--set-extension-widget key nil)))
+          (pilish--remove-extension-ui (process-get proc 'pilish-mux-stale-ui))
           (process-put proc 'pilish-mux-stale-ui nil)
           (process-put proc 'pilish-mux-snapshot nil)
           (process-put proc 'pilish-mux-awaiting-snapshot nil)
@@ -307,7 +304,7 @@ this reset."
       (pilish--retarget-session-identity dir (pilish--shared-free-session-name dir)))
     (pilish--reset-session-state)
     ;; The snapshot's replay sets the runtime's statuses and widgets again.
-    (pilish--clear-extension-ui)
+    (pilish--remove-extension-ui (pilish--extension-ui-keys))
     ;; Only work left after the context guard can survive initial identity
     ;; adoption; a real replacement already suspended/invalidated its owners.
     (setq pilish--followup-queue followups pilish--prompt-wait prompt-wait)

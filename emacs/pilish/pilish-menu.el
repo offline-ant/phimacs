@@ -531,16 +531,11 @@ Call this when starting a new session to ensure no stale state persists."
         pilish--pending-tool-overlay nil
         pilish--tool-block-order-counter 0
         pilish--thinking-block-order-counter 0)
-  ;; A new unshared session's extensions have set their statuses and
-  ;; widgets already.
-  (pilish--drop-stale-extension-ui)
   (pilish--set-activity-phase "idle" 'reset t)
   (pilish--clear-local-user-message-region)
   (pilish--invalidate-model-change)
   (pilish--clear-unsupported-extension-ui-warnings)
   (pilish--invalidate-history-loads)
-  (pilish--finish-session-transition
-   pilish--session-transition-generation)
   ;; Use accessors for cross-module state
   (pilish--invalidate-prompt-start-wait)
   (pilish--clear-followup-queue)
@@ -551,7 +546,11 @@ Call this when starting a new session to ensure no stale state persists."
   (when pilish--tool-args-cache
     (clrhash pilish--tool-args-cache))
   (when pilish--live-tool-blocks
-    (clrhash pilish--live-tool-blocks)))
+    (clrhash pilish--live-tool-blocks))
+  ;; Finish clears the stale marks.  Notify only after the reset is complete.
+  (let ((stale pilish--stale-extension-ui))
+    (pilish--finish-session-transition pilish--session-transition-generation)
+    (pilish--remove-extension-ui stale)))
 
 (defun pilish--clear-chat-buffer ()
   "Clear the chat buffer and display fresh startup header.

@@ -2361,7 +2361,7 @@ copied completely without reaching `max-lisp-eval-depth'."
   "Alist of extension status messages for header-line display.
 Keys are extension identifiers (strings), values are status text.
 Change it only through `pilish--set-extension-status' and
-`pilish--clear-extension-statuses', which run
+`pilish--remove-extension-ui', which run
 `pilish-extension-status-functions'.")
 
 (defcustom pilish-extension-status-functions nil
@@ -2371,9 +2371,10 @@ Each function is called with three arguments:
   CHAT-BUFFER KEY TEXT
 
 KEY is the extension's `statusKey' and TEXT its new status text, or nil
-when the status was cleared.  A session reset, such as starting a new
-session, clears every status and calls the functions once per cleared
-KEY.  Setting a status to its current text and properties calls nothing.
+when the status was cleared.  When Pi replaces extensions or a shared
+runtime replays its UI, statuses not set again are cleared.  The functions
+run once per cleared KEY.  Setting the same text and properties calls
+nothing.
 
 The functions run in CHAT-BUFFER after the change is complete, so
 `pilish-session-extension-status' already returns TEXT.  KEY and TEXT
@@ -2438,6 +2439,7 @@ remaining functions are then skipped."
   "Set extension status KEY to TEXT in the current chat buffer.
 Nil TEXT clears the status.  Run `pilish-extension-status-functions'
 when the text changed."
+  (pilish--note-extension-ui 'status key)
   (let ((old (cdr (assoc key pilish--extension-status))))
     (setq pilish--extension-status
           (assoc-delete-all key pilish--extension-status))
@@ -2446,17 +2448,6 @@ when the text changed."
     (force-mode-line-update t)
     (unless (equal-including-properties old text)
       (pilish--run-extension-status-functions key text))))
-
-(defun pilish--clear-extension-statuses ()
-  "Clear every extension status in the current chat buffer.
-Run `pilish-extension-status-functions' once per cleared key, in
-header-line order, after all statuses are cleared."
-  (let ((keys (mapcar #'car pilish--extension-status)))
-    (setq pilish--extension-status nil)
-    (when keys
-      (force-mode-line-update t))
-    (while (and keys (not (pilish--run-extension-status-functions
-                           (pop keys) nil))))))
 
 (defvar-local pilish--extension-widgets nil
   "Extension widgets of this session, in the order their keys first arrived.
@@ -2568,24 +2559,35 @@ runtimes reconcile them from their snapshot instead."
 
 (defun pilish--drop-stale-extension-ui ()
   "Remove what `pilish--mark-extension-ui-stale' marked."
-  (let ((stale pilish--stale-extension-ui))
-    (setq pilish--stale-extension-ui nil)
-    (pcase-dolist (`(,kind . ,key) stale)
-      (if (eq kind 'widget)
-          (pilish--set-extension-widget key nil)
-        (setq pilish--extension-status
-              (assoc-delete-all key pilish--extension-status))
-        (pilish--run-extension-status-functions key nil)))
-    (when stale (force-mode-line-update t))))
+  (pilish--remove-extension-ui
+   (prog1 pilish--stale-extension-ui (setq pilish--stale-extension-ui nil))))
 
-(defun pilish--clear-extension-ui ()
-  "Forget the extension statuses and widgets of the current chat buffer."
-  (let ((keys (mapcar #'car pilish--extension-status)))
-    (setq pilish--extension-status nil
-          pilish--extension-widgets nil)
-    (pilish--refresh-input-preamble)
-    (dolist (key keys)
-      (pilish--run-extension-status-functions key nil))))
+(defun pilish--remove-extension-ui (stale)
+  "Remove STALE (KIND . KEY) entries from the chat's extension UI.
+Notify status observers in header order, after all removals.  Skip any
+key restored by an earlier notification, and stop if the chat is killed."
+  (let (cleared widgets-changed)
+    ;; Both replacement and snapshot replay start from `pilish--extension-ui-keys'
+    ;; in header order.  Keys set again leave STALE, even for unchanged text.
+    (pcase-dolist (`(,kind . ,key) stale)
+      (pcase kind
+        ('widget
+         (setq pilish--extension-widgets
+               (assoc-delete-all key pilish--extension-widgets)
+               widgets-changed t))
+        ('status
+         (when (assoc key pilish--extension-status)
+           (setq pilish--extension-status
+                 (assoc-delete-all key pilish--extension-status))
+           (push key cleared)))))
+    (when widgets-changed (pilish--refresh-input-preamble))
+    (when cleared
+      (force-mode-line-update t)
+      (catch 'chat-killed
+        (dolist (key (nreverse cleared))
+          (unless (assoc key pilish--extension-status)
+            (when (pilish--run-extension-status-functions key nil)
+              (throw 'chat-killed t))))))))
 
 (defvar-local pilish--held-chat-notices nil
   "Chat notices waiting for streaming or compaction to end, newest first.")

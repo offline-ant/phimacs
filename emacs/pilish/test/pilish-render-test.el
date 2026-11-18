@@ -9046,10 +9046,69 @@ killed  *chat*; later functions skipped"))))
                                   (push (cons (buffer-name buffer) key) calls)
                                   (set-buffer other)
                                   (kill-buffer buffer))))
-              (pilish--clear-extension-statuses))
+              (pilish--mark-extension-ui-stale)
+              (pilish--drop-stale-extension-ui))
           (kill-buffer other))
         (should (equal calls '((" *chat*" . "a"))))
         (should (= (length warnings) 1))))))
+
+(ert-deftest pilish-test-extension-status-functions-follow-stale-drop ()
+  "Dropping stale statuses reports each one that was not set again, once.
+A status a function sets again while hearing of another one's removal is
+not reported as cleared afterwards."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let ((chat (current-buffer))
+          calls)
+      (setq-local pilish-extension-status-functions
+                  (list (lambda (buffer key text)
+                          (push (cons key text) calls)
+                          (when (and (equal key "b") (null text))
+                            (with-current-buffer buffer
+                              (pilish--set-extension-status "a" "back"))))))
+      (dolist (key '("a" "b" "kept"))
+        (pilish--set-extension-status key "before"))
+      (pilish--mark-extension-ui-stale)
+      (pilish--set-extension-status "kept" "after")
+      (setq calls nil)
+      (pilish--drop-stale-extension-ui)
+      ;; Header-line order: "b" goes first and its function sets "a" again.
+      (should (equal (reverse calls) '(("b") ("a" . "back"))))
+      (should (equal (pilish-session-extension-status chat)
+                     '(("a" . "back") ("kept" . "after"))))
+      ;; Nothing is stale any more.
+      (setq calls nil)
+      (pilish--drop-stale-extension-ui)
+      (should-not calls))))
+
+(ert-deftest pilish-test-extension-widget-stays-out-of-history-search ()
+  "History isearch neither saves nor replaces the widgets above the draft.
+Its previews replace the whole draft, and quitting or `M-n' after
+accepting restores the draft below the unchanged widget."
+  (pilish-test-with-rpc-session (chat input _proc _commands)
+    (with-current-buffer chat
+      (pilish-test--widget "k" ["keep me"]))
+    (with-current-buffer input
+      (pilish--history-add "older prompt")
+      (insert "draft")
+      (dolist (quit '(t nil))
+        (cl-letf (((symbol-function 'isearch-backward) #'ignore))
+          (pilish-history-isearch-backward))
+        (should (equal pilish--history-isearch-saved-input "draft"))
+        (pilish--history-isearch-goto 0)
+        (should (equal (buffer-string) "older prompt"))
+        (should (equal (pilish-test--widget-string input) "keep me\n"))
+        (let ((isearch-mode-end-hook-quit quit))
+          (pilish--history-isearch-end))
+        (unless quit
+          (should (equal (buffer-string) "older prompt"))
+          (pilish-next-input))
+        (should (equal (buffer-string) "draft"))
+        (should (equal (pilish-test--widget-string input) "keep me\n"))
+        (should (= (point-min)
+                   (overlay-start
+                    (pilish--input-preamble-overlay)))))
+      (should (equal (ring-elements pilish--input-ring) '("older prompt"))))))
 
 (ert-deftest pilish-test-extension-ui-set-working-message ()
   "extension_ui_request setWorkingMessage stores working text."

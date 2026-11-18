@@ -411,6 +411,27 @@ The replayed start is not the run's start, so its duration is unknown."
                      "old widget"
                      (overlay-get (pilish--input-preamble-overlay) 'before-string)))))))
 
+(ert-deftest pilish-shared-test-live-reconciliation-honors-status-restored-by-observer ()
+  "LIVE removes unreplayed statuses together, before reporting any removal."
+  (pilish-test-with-rpc-session (chat _input proc _commands)
+    (pilish-shared-test--hello proc)
+    (with-current-buffer chat
+      (pilish--set-extension-status "first" "old")
+      (pilish--set-extension-status "second" "old"))
+    (let* (observed
+           (pilish-extension-status-functions
+            (list (lambda (buf key text)
+                    (push (list key text (pilish-session-extension-status buf))
+                          observed)
+                    (when (equal key "second")
+                      (pilish--set-extension-status "first" "restored"))))))
+      (pilish-test--stdout proc (pilish-shared-test--snapshot 3 "gap" nil)
+                           '(:type "pimux_live" :generation 3))
+      (should (equal (nreverse observed)
+                     '(("second" nil nil)
+                       ("first" "restored" (("first" . "restored"))))))
+      (should (equal (pilish-session-extension-status chat "first") "restored")))))
+
 (ert-deftest pilish-shared-test-truncated-replay-marks-and-refreshes-after-the-run ()
   "A replay missing part of the run says so; settling brings the full text."
   (pilish-test-with-rpc-session (chat _input proc commands)
