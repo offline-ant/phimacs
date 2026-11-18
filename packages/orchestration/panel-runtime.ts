@@ -35,6 +35,8 @@ export interface PanelState {
   signal?: string | null;
   closed: boolean;
   error?: string;
+  /** Processes that a successful Close left running outside the panel. */
+  warning?: string;
 }
 export type PanelInput = { kind: "text"; text: string; enter: boolean } | { kind: "keys"; keys: string[] };
 
@@ -79,7 +81,8 @@ function stateFor(binding: PanelBinding, value: unknown): PanelState {
   const state = value as PanelState;
   if (state.schema !== 1 || state.id !== binding.id || !isProcessIdentity(state.process)
     || (binding.process && !sameProcessIdentity(binding.process, state.process)) || !["held", "running", "exited"].includes(state.command)
-    || typeof state.closed !== "boolean" || (state.error !== undefined && typeof state.error !== "string")) throw new Error("Panel state identity changed");
+    || typeof state.closed !== "boolean" || (state.error !== undefined && typeof state.error !== "string")
+    || (state.warning !== undefined && typeof state.warning !== "string")) throw new Error("Panel state identity changed");
   return state;
 }
 export function savedPanelState(binding: PanelBinding): PanelState | undefined {

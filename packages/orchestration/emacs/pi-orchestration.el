@@ -553,6 +553,8 @@ transport disconnected before termination and never received pimux_exit."
                        (error "Panel Close was not acknowledged: %s" (string-trim text)))
                      (unless (eq target (gethash id pi-orchestration--targets))
                        (error "Panel target changed during Close"))
+                     (when-let* ((warning (plist-get receipt :warning)))
+                       (message "Panel Close: %s" warning))
                      (pi-orchestration--close id nil nil t panel-id))
                  (error
                   (setq failure

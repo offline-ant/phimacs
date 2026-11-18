@@ -36,7 +36,25 @@ export function panelKeyBytes(key: string): string {
   if (modifiers.includes("alt")) value = `\x1b${value}`;
   return value;
 }
-function descendants(identity: ProcessIdentity, owned: Map<number, ProcessIdentity>): void {
+/** Parent PID and controlling terminal (`tty_nr`, 0 for none) of PID, or undefined once it is gone. */
+function processLinks(pid: number): { parent: number; terminal: number } | undefined {
+  let stat: string;
+  try { stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  // Fields after the parenthesized command: state, ppid, pgrp, session, tty_nr.
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  return { parent: Number(fields[1]), terminal: Number(fields[4]) };
+}
+/** User name (else `uid N`) of PID's real user, or undefined once it is gone. */
+function processUser(pid: number): string | undefined {
+  let status: string;
+  try { status = fs.readFileSync(`/proc/${pid}/status`, "utf8"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  const uid = /^Uid:\s+(\d+)/m.exec(status)?.[1];
+  const entry = fs.readFileSync("/etc/passwd", "utf8").split("\n").find(line => line.split(":")[2] === uid);
+  return entry?.split(":")[0] ?? `uid ${uid}`;
+}
+function descendants(identity: ProcessIdentity, owned: Map<number, ProcessIdentity>, terminals: Set<number>): void {
   if (processIdentityStatus(identity) !== "alive") return;
   try {
     const children = fs.readFileSync(`/proc/${identity.pid}/task/${identity.pid}/children`, "utf8").trim().split(/\s+/);
@@ -45,7 +63,12 @@ function descendants(identity: ProcessIdentity, owned: Map<number, ProcessIdenti
       if (!pid) continue;
       const child = readProcessIdentity(Number(pid));
       const previous = child ? owned.get(child.pid) : undefined;
-      if (child && (!previous || !sameProcessIdentity(previous, child))) { owned.set(child.pid, child); descendants(child, owned); }
+      if (child && (!previous || !sameProcessIdentity(previous, child))) {
+        owned.set(child.pid, child);
+        const terminal = processLinks(child.pid)?.terminal;
+        if (terminal) terminals.add(terminal);
+        descendants(child, owned, terminals);
+      }
     }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 }
@@ -87,6 +110,8 @@ export async function runPanelRuntime(binding: PanelBinding): Promise<void> {
     fs.closeSync(fd);
   };
   const owned = new Map<number, ProcessIdentity>();
+  // Controlling terminals observed on owned processes: the panel PTY and the native terminal.
+  const terminals = new Set<number>();
   const sockets = new Set<net.Socket>();
   let admission: Promise<void> = Promise.resolve();
   const mutate = (operation: () => Promise<void>): Promise<void> => {
@@ -97,15 +122,31 @@ export async function runPanelRuntime(binding: PanelBinding): Promise<void> {
   const publish = (): void => writePanelState(exact, state);
   const cancelled = (): boolean => fs.existsSync(panelFile(binding, "cancelled"));
   const track = (): void => {
-    if (childIdentity) descendants(childIdentity, owned);
-    for (const process of [...owned.values()]) descendants(process, owned);
+    if (childIdentity) descendants(childIdentity, owned, terminals);
+    for (const process of [...owned.values()]) descendants(process, owned, terminals);
+  };
+  // A process escaped the panel when it is neither on a panel terminal nor
+  // below this wrapper. Returns its user then, else undefined.
+  const escapedUser = (owner: ProcessIdentity): string | undefined => {
+    const user = processUser(owner.pid);
+    const links = processLinks(owner.pid);
+    if (!user || !links || terminals.has(links.terminal)) return undefined;
+    for (let parent = links.parent; parent > 1;) {
+      if (parent === identity.pid) return undefined;
+      const next = processLinks(parent);
+      if (!next) return undefined;
+      parent = next.parent;
+    }
+    return processIdentityStatus(owner) === "alive" ? user : undefined;
   };
   const settleOwned = async (): Promise<void> => {
     track();
     if (childIdentity) owned.set(childIdentity.pid, childIdentity);
     // Descendants running as another user (such as `su`'s shell) cannot be
     // signalled. Children come first, so their signalable ancestors still are;
-    // they then end on the PTY hangup and are awaited like the others.
+    // they then end on the PTY hangup and are awaited like the others. One that
+    // survives detached (a disowned GUI app) has left the panel: Close reports
+    // it instead of failing forever.
     const unsignalable = new Set<number>();
     for (const signal of ["SIGTERM", "SIGKILL"] as const) {
       for (const process of [...owned.values()].reverse()) {
@@ -124,12 +165,20 @@ export async function runPanelRuntime(binding: PanelBinding): Promise<void> {
       while ([...owned.values()].some(process => processIdentityStatus(process) !== "dead") && Date.now() < deadline) await delay(10);
       if ([...owned.values()].every(process => processIdentityStatus(process) === "dead")) break;
     }
-    const remaining = [...owned.values()].filter(process => processIdentityStatus(process) !== "dead");
+    const escaped: string[] = [];
+    const remaining = [...owned.values()].filter(process => {
+      if (processIdentityStatus(process) === "dead") return false;
+      const user = unsignalable.has(process.pid) ? escapedUser(process) : undefined;
+      if (user) escaped.push(`${process.pid} (${user})`);
+      return !user;
+    });
     if (remaining.length) {
       throw new Error(`Panel child cleanup is uncertain: ${remaining.map(process =>
         unsignalable.has(process.pid) ? `${process.pid} (not permitted to signal)` : String(process.pid)).join(", ")} still running`);
     }
     if (childClosed) await childClosed;
+    if (escaped.length) state.warning = `Left running outside the panel, not permitted to signal: ${escaped.join(", ")}`;
+    else delete state.warning;
   };
   const closeNative = async (): Promise<void> => {
     if (config.native.kind !== "tmux") return;

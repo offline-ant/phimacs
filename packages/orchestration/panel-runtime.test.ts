@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -9,7 +10,7 @@ import { Worker } from "node:worker_threads";
 import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { readProcessIdentity, processIdentityStatus } from "@phimacs/pimux/process-identity";
-import { createPanelBinding, panelWrapperArgv, waitPanelReady, activatePanel, sendPanel, panelStatus, closePanel, rollbackPanel, readPanelConfig, type PanelBinding } from "./panel-runtime.ts";
+import { createPanelBinding, panelWrapperArgv, waitPanelReady, activatePanel, sendPanel, panelStatus, closePanel, rollbackPanel, readPanelConfig, savedPanelState, type PanelBinding } from "./panel-runtime.ts";
 import { panelKeyBytes } from "./panel-runtime-owner.ts";
 
 async function until(predicate: () => boolean | Promise<boolean>): Promise<void> {
@@ -240,9 +241,10 @@ test("Close settles the owned PTY command and descendants, not unrelated process
   }
 });
 
-// A wrapper whose `process.kill` refuses `sleep` with EPERM, like descendants of
-// another user (`su`'s shell), without needing a second account.
-async function launchUnsignalableSleep(command: string): Promise<{ binding: PanelBinding; child: ChildProcess; sleep: NonNullable<ReturnType<typeof readProcessIdentity>> }> {
+// A wrapper whose `process.kill` refuses `sleep` (and any other REFUSED command
+// names) with EPERM, like descendants of another user (`su`'s shell), without
+// needing a second account.
+async function launchUnsignalableSleep(command: string, refused = ["sleep"]): Promise<{ binding: PanelBinding; child: ChildProcess; sleep: NonNullable<ReturnType<typeof readProcessIdentity>> }> {
   const original = createPanelBinding({ argv: ["/bin/sh", "-c", command], cwd: "/tmp" });
   const args = panelWrapperArgv(original);
   const probe = `
@@ -252,7 +254,7 @@ async function launchUnsignalableSleep(command: string): Promise<{ binding: Pane
     process.kill = (pid, signal) => {
       let comm = '';
       try { comm = fs.readFileSync('/proc/' + pid + '/comm', 'utf8').trim(); } catch {}
-      if (comm === 'sleep') throw Object.assign(new Error('kill EPERM'), { code: 'EPERM', syscall: 'kill' });
+      if (${JSON.stringify(refused)}.includes(comm)) throw Object.assign(new Error('kill EPERM'), { code: 'EPERM', syscall: 'kill' });
       return kill(pid, signal);
     };
     await import(pathToFileURL(process.argv[1]).href);
@@ -276,17 +278,39 @@ test("Close signals around an unsignalable descendant and awaits its hangup exit
   } finally { await cleanup(binding, child); }
 });
 
-test("Close names a surviving unsignalable descendant, and a later Close succeeds", { timeout: 20_000 }, async () => {
+test("Close reports an unsignalable descendant that survived outside the panel and succeeds", { timeout: 20_000 }, async () => {
+  // Like `chromium … & disown` after `su - rs`: its shell is gone and the PTY hung up.
   const { binding, child, sleep } = await launchUnsignalableSleep("trap '' HUP; sleep 300 & echo CHILD:$!; wait");
   try {
-    await assert.rejects(closePanel(binding), new RegExp(`uncertain: ${sleep.pid} \\(not permitted to signal\\) still running`));
-    assert.equal(processIdentityStatus(binding.process!), "alive", "failed cleanup retains the wrapper");
-    process.kill(sleep.pid, "SIGKILL");
-    await until(() => processIdentityStatus(sleep) === "dead");
     await closePanel(binding);
     assert.equal(processIdentityStatus(binding.process!), "dead");
+    assert.equal(processIdentityStatus(sleep), "alive");
+    assert.equal(savedPanelState(binding)?.warning,
+      `Left running outside the panel, not permitted to signal: ${sleep.pid} (${os.userInfo().username})`);
   } finally {
     if (processIdentityStatus(sleep) === "alive") process.kill(sleep.pid, "SIGKILL");
+    await cleanup(binding, child);
+  }
+});
+
+test("Close names unsignalable processes still in the panel, and a later Close succeeds once they leave", { timeout: 20_000 }, async () => {
+  const { binding, child, sleep } = await launchUnsignalableSleep("trap '' HUP; sleep 300 & echo CHILD:$!; wait", ["sleep", "sh", "script"]);
+  const childOf = (pid: number) => readProcessIdentity(Number(fs.readFileSync(`/proc/${pid}/task/${pid}/children`, "utf8").trim()))!;
+  const script = childOf(binding.process!.pid);
+  const shell = childOf(script.pid);
+  try {
+    // script stays below the wrapper, its shell and sleep on the panel PTY.
+    await assert.rejects(closePanel(binding), new RegExp(`uncertain: ${[script, shell, sleep].map(owner =>
+      `${owner.pid} \\(not permitted to signal\\)`).join(", ")} still running`));
+    assert.equal(processIdentityStatus(binding.process!), "alive", "failed cleanup retains the wrapper");
+    // The PTY hangs up: the shell ignores it and, with sleep, leaves the panel.
+    process.kill(script.pid, "SIGKILL");
+    await until(() => processIdentityStatus(script) === "dead");
+    await closePanel(binding);
+    assert.equal(processIdentityStatus(binding.process!), "dead");
+    assert.match(savedPanelState(binding)?.warning ?? "", new RegExp(`: ${shell.pid} \\(\\S+\\), ${sleep.pid} \\(`));
+  } finally {
+    for (const owner of [script, shell, sleep]) if (processIdentityStatus(owner) === "alive") process.kill(owner.pid, "SIGKILL");
     await cleanup(binding, child);
   }
 });

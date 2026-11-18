@@ -300,8 +300,12 @@ SIGWINCH to its foreground process group. The wrapper remains alive after comman
 exit, so completed output is readable and ordinary Close still has exact ownership.
 Close settles observed child identities and the wrapper before releasing the
 registered name/output. Descendants it may not signal (another user's, such as
-`su`'s shell) are awaited until they end on the PTY hangup; any still running
-fail Close with their PIDs, and a later Close retries. Tmux pins its server and conditionally closes the live
+`su`'s shell) are awaited until they end on the PTY hangup. One that survives
+outside the panel, neither below the wrapper nor on a terminal its processes
+used (such as `chromium … & disown` after `su - rs`), does not block Close:
+Close succeeds, and the closed panel's state `warning` names its PID and user.
+Emacs shows that warning as a message. Any other process still running fails Close
+with its PID, and a later Close retries. Tmux pins its server and conditionally closes the live
 wrapper in the native command queue. Herdr allocates explicit wrapper argv and
 uses its owning close-on-process-exit lifecycle, not alias-based `pane.close`.
 Emacs disposes Ghostel only after wrapper cleanup; its sidebar uses the same
@@ -314,7 +318,9 @@ receipt does not acknowledge all panel cleanup. Worker panels follow their own
 creators; independent forks are not stopped. Native frontend/terminal destruction
 can end its hosted wrapper, whereas an RPC view disconnect does not. Cleanup
 tracks observed descendant process identities, not kernel-level containment:
-deliberately daemonized/double-forked work can escape observation.
+deliberately daemonized/double-forked work can escape observation. Observed work
+that escapes is still signalled when permitted, so only another user's survives
+Close.
 
 Observer readiness validates the registered target. Bootstrap/late errors remain
 in its private diagnostic file; registry diagnostics are updated only while
