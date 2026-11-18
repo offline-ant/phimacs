@@ -13,7 +13,8 @@
 ;; - Editor requests open a dedicated multiline buffer; the prompt draft is
 ;;   never reused.
 ;; - `pilish-extension-dialog-style' selects how the other requests ask:
-;;   upstream's minibuffer prompts, or `inline' widgets at the end of the
+;;   upstream's minibuffer prompts, queued per process and asked one at a
+;;   time, oldest first, or `inline' widgets at the end of the
 ;;   chat buffer whose choices are buttons (mouse clicks, RET and digit keys
 ;;   answer, C-c C-k cancels).
 ;;
@@ -39,7 +40,8 @@
 
 (defcustom pilish-extension-dialog-style 'minibuffer
   "How extension confirm, select, and input dialogs ask the user.
-`minibuffer' prompts in the minibuffer as soon as Pi requests an answer.
+`minibuffer' prompts in the minibuffer as soon as Pi requests an answer;
+requests arriving during a prompt wait and are asked next, oldest first.
 `inline' never interrupts: the request waits as a widget at the end of its
 chat buffer, answered by clicking a choice, RET, or a digit key there, or
 reached with `pilish-answer-dialog'.  Editor requests open an editor buffer
@@ -193,23 +195,45 @@ loses its `:pilish-stale' mark and is not asked twice."
 
 (defun pilish--ask-extension-dialog (event proc)
   "Register the new dialog EVENT owned by PROC and ask the user."
-  (let* ((request (pilish--extension-dialog-open proc event))
-         (pilish--dialog-response-context (plist-get request :pilish-input-context)))
+  (let ((request (pilish--extension-dialog-open proc event)))
     (cond
      ((equal (plist-get event :method) "editor")
-      (pilish--extension-ui-editor
-       request proc
-       (or (not (eq pilish-extension-dialog-style 'inline))
-           (pilish--dialog-followup-window proc))))
+      (let ((pilish--dialog-response-context (plist-get request :pilish-input-context)))
+        (pilish--extension-ui-editor
+         request proc
+         (or (not (eq pilish-extension-dialog-style 'inline))
+             (pilish--dialog-followup-window proc)))))
      ((eq pilish-extension-dialog-style 'inline)
       (pilish--present-inline-dialog proc request))
-     (t
-      (unwind-protect
-          (pcase (plist-get event :method)
-            ("confirm" (pilish--extension-ui-confirm event proc))
-            ("select"  (pilish--extension-ui-select event proc))
-            ("input"   (pilish--extension-ui-input event proc)))
-        (pilish--extension-dialog-close proc (plist-get event :id)))))))
+     ((processp proc)
+      (pilish--extension-dialog-set proc (plist-get event :id) :pilish-minibuffer t)
+      (pilish--prompt-queued-dialogs proc))
+     (t (pilish--prompt-dialog request proc)))))
+
+(defun pilish--prompt-queued-dialogs (process)
+  "Prompt the queued minibuffer requests of PROCESS one at a time, oldest first.
+A request arriving while a prompt is active waits in the queue instead of
+nesting a minibuffer; the active loop prompts it next.  A queued request
+that closes meanwhile leaves the pending list, and with it the queue."
+  (unless (process-get process 'pilish-dialog-prompting)
+    (process-put process 'pilish-dialog-prompting t)
+    (unwind-protect
+        (let (request)
+          (while (setq request (cl-find-if (lambda (entry) (plist-get entry :pilish-minibuffer))
+                                           (pilish--extension-dialog-pending process)))
+            (pilish--extension-dialog-set process (plist-get request :id) :pilish-minibuffer nil)
+            (pilish--prompt-dialog request process)))
+      (process-put process 'pilish-dialog-prompting nil))))
+
+(defun pilish--prompt-dialog (request proc)
+  "Ask confirm, select or input REQUEST of PROC in the minibuffer, then close it."
+  (let ((pilish--dialog-response-context (plist-get request :pilish-input-context)))
+    (unwind-protect
+        (pcase (plist-get request :method)
+          ("confirm" (pilish--extension-ui-confirm request proc))
+          ("select"  (pilish--extension-ui-select request proc))
+          ("input"   (pilish--extension-ui-input request proc)))
+      (pilish--extension-dialog-close proc (plist-get request :id)))))
 
 (defun pilish--dialog-chat (chat-buffer)
   "Return CHAT-BUFFER or the current session's chat buffer."
@@ -229,6 +253,10 @@ inline widget is shown with point on its first choice."
      ((buffer-live-p editor) (pop-to-buffer editor))
      ((pilish--dialog-widget chat (plist-get request :id))
       (pilish--dialog-focus chat (plist-get request :id)))
+     ;; A prompt left by a nonlocal exit, such as `top-level', resumes here.
+     ((and (plist-get request :pilish-minibuffer)
+           (not (process-get proc 'pilish-dialog-prompting)))
+      (pilish--prompt-queued-dialogs proc))
      (t (user-error "The Pi dialog is asking in the minibuffer")))))
 
 (defun pilish-cancel-dialog (&optional chat-buffer)

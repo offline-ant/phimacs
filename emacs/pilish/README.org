@@ -923,7 +923,8 @@ they await the user.  =pilish-session-pending-dialogs= lists a session's
 pending requests, and =pilish-extension-dialog-functions= is called with the
 chat buffer, request, and =open= or =close= whenever one starts or stops
 waiting (answered, cancelled, timed out, stopped, or abandoned by process
-exit).  By default a dialog prompts in the minibuffer as soon as Pi asks.  Set
+exit).  By default a dialog prompts in the minibuffer as soon as Pi asks;
+questions that arrive during a prompt are asked after it, oldest first.  Set
 =pilish-extension-dialog-style= to =inline= to never be interrupted: the
 question waits at the end of its chat buffer with clickable choices (mouse,
 =RET=, or a digit key; =TAB= moves, =C-c C-k= cancels; =y=/=n= for yes-or-no

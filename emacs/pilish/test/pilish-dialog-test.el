@@ -281,6 +281,62 @@ dialog hook calls as (ID STATE) and RESPONSES records sent responses."
       (should-not (pilish-session-pending-dialogs chat))
       (should-error (pilish-answer-dialog chat) :type 'user-error))))
 
+(defun pilish-test--dialog-select (chat id)
+  "Deliver a select request ID with options a and b to CHAT."
+  (with-current-buffer chat
+    (pilish--handle-extension-ui-request
+     (list :type "extension_ui_request" :id id :method "select"
+           :title (concat "Pick " id) :options ["a" "b"]))))
+
+(ert-deftest pilish-test-dialog-minibuffer-style-queues-concurrent-requests ()
+  (pilish-test--with-dialog-session (chat process events responses)
+    (let ((pilish-extension-dialog-style 'minibuffer) (depth 0) prompts)
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt &rest _)
+                   (should (= (setq depth (1+ depth)) 1))
+                   (push prompt prompts)
+                   (pcase prompt
+                     ("Pick s1 "
+                      ;; Requests arriving during a prompt wait their turn.
+                      (dolist (id '("s2" "s3" "s4")) (pilish-test--dialog-select chat id))
+                      (should (equal (mapcar (lambda (r) (plist-get r :id))
+                                             (pilish-session-pending-dialogs chat))
+                                     '("s1" "s2" "s3" "s4")))
+                      ;; Authoritative closure or a timeout drops a queued one.
+                      (pilish--extension-dialog-close process "s3"))
+                     ("Pick s2 "
+                      (pilish--cancel-dialog-request
+                       process (pilish--extension-dialog-request process "s4"))))
+                   (setq depth (1- depth))
+                   "b")))
+        (pilish-test--dialog-select chat "s1"))
+      (should (equal (reverse prompts) '("Pick s1 " "Pick s2 ")))
+      (should (equal (mapcar (lambda (r) (list (plist-get r :id) (or (plist-get r :value)
+                                                                    (plist-get r :cancelled))))
+                             (reverse responses))
+                     '(("s1" "b") ("s4" t) ("s2" "b"))))
+      (should-not (pilish-session-pending-dialogs chat))
+      (should-not (process-get process 'pilish-dialog-prompting)))))
+
+(ert-deftest pilish-test-dialog-minibuffer-queue-resumes-after-nonlocal-exit ()
+  (pilish-test--with-dialog-session (chat process events responses)
+    (let ((pilish-extension-dialog-style 'minibuffer) (escape t))
+      (cl-letf (((symbol-function 'completing-read)
+                 (lambda (prompt &rest _)
+                   (when (and escape (equal prompt "Pick s1 "))
+                     (pilish-test--dialog-select chat "s2")
+                     (setq escape nil)
+                     (throw 'escape nil))
+                   "a")))
+        (catch 'escape (pilish-test--dialog-select chat "s1"))
+        ;; s1 got its cancellation; s2 waits until the user asks for it.
+        (should (equal (mapcar (lambda (r) (plist-get r :id))
+                               (pilish-session-pending-dialogs chat))
+                       '("s2")))
+        (pilish-answer-dialog chat))
+      (should (equal (car responses) '(:type "extension_ui_response" :id "s2" :value "a")))
+      (should-not (pilish-session-pending-dialogs chat)))))
+
 (ert-deftest pilish-test-dialog-inline-editor-and-cancel ()
   (pilish-test--with-dialog-session (chat process events responses)
     (let ((pilish-extension-dialog-style 'inline) displayed)
@@ -379,6 +435,31 @@ dialog hook calls as (ID STATE) and RESPONSES records sent responses."
               (should (equal (car events) '("s1" close))))
             (with-current-buffer input (should (equal (buffer-string) "my draft"))))
         (kill-buffer input)))))
+
+(ert-deftest pilish-test-dialog-inline-concurrent-selects-answer-independently ()
+  (pilish-test--with-dialog-session (chat process events responses)
+    (let ((pilish-extension-dialog-style 'inline))
+      (dolist (id '("s1" "s2" "s3")) (pilish-test--dialog-select chat id))
+      (with-current-buffer chat
+        (should (string-match-p "Pick s1\\(?:.\\|\n\\)*Pick s2\\(?:.\\|\n\\)*Pick s3"
+                                (buffer-string)))
+        (let ((choice (lambda (id label)
+                        (save-excursion
+                          (goto-char (point-min))
+                          (search-forward (concat "Pick " id))
+                          (search-forward label)
+                          (match-beginning 0)))))
+          (pilish-test--press chat (funcall choice "s2" "b"))
+          (should-not (pilish-test--dialog-widget-p "s2"))
+          (should (pilish-test--dialog-widget-p "s1"))
+          (should (pilish-test--dialog-widget-p "s3"))
+          (pilish-test--press chat (funcall choice "s3" "a"))
+          (pilish-test--press chat (funcall choice "s1" "b"))))
+      (should (equal (mapcar (lambda (r) (list (plist-get r :id) (plist-get r :value)))
+                             (reverse responses))
+                     '(("s2" "b") ("s3" "a") ("s1" "b"))))
+      (should-not (pilish-session-pending-dialogs chat))
+      (with-current-buffer chat (should (equal (buffer-string) ""))))))
 
 (ert-deftest pilish-test-dialog-inline-context-lines-precede-question ()
   (let ((text (substring-no-properties
