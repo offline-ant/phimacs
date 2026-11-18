@@ -102,10 +102,11 @@ at **1.5.2**. Checks pass on Emacs **31.1** and **32.0.50**;
 lanes. Pilish's declared standalone requirements are in its
 [package documentation](../emacs/pilish/README.org).
 
-Use a release tag, not a moving branch:
+These instructions use `main`; the v0.1.0 release does not have all the features
+described here.
 
 ```sh
-git clone --branch v0.1.0 https://github.com/offline-ant/phimacs phimacs
+git clone --branch main https://github.com/offline-ant/phimacs phimacs
 cd phimacs
 npm ci --ignore-scripts
 npm run compile
@@ -116,9 +117,17 @@ packages; it is not a minimal artifact installation. No lifecycle script runs
 implicitly: `.npmrc` disables scripts, including `prepack`. Compile explicitly
 before packing or using generated JavaScript.
 
-Put the checkout's `bin/` on PATH, or link `bin/phimacs` into a directory on PATH
-(`ln -s "$PWD/bin/phimacs" ~/.local/bin/phimacs`); the script finds its checkout
-through the link. Do not put checkout `node_modules/.bin` on PATH: it also contains
+Put the checkout's `bin/` on PATH, or link `bin/phimacs` into a directory on PATH;
+the script finds its checkout through the link. For example, create
+`~/.local/bin` if it is missing and add it to PATH in your shell startup file:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+export PATH="$HOME/.local/bin:$PATH"
+ln -s "$PWD/bin/phimacs" "$HOME/.local/bin/phimacs"
+```
+
+Keep the checkout in place: the launcher runs from it. Do not put checkout `node_modules/.bin` on PATH: it also contains
 an SDK `pi`.
 
 A running service and Emacs daemon load code from their checkout. Do not
@@ -203,9 +212,11 @@ Run the selected Pi interactively and use `/login` for a stock supported provide
 then select its model with `/model`. Exit that session afterwards. No private
 provider, copied credential file or account reader is required. Authentication
 is not a paid inference test; any actual provider prompt is your explicit action.
+The commands below use `PHIMACS_PI` when you set it (as in the trial environment),
+else the `pi` on PATH.
 
 ```sh
-"$PHIMACS_PI"
+"${PHIMACS_PI:-pi}"
 phimacs setup
 ```
 
@@ -229,17 +240,25 @@ with group/other access and name it; create it with `mkdir -m 700`, under
 `umask 077`, or fix it with `chmod 700`. Bytecode is written next to checkout
 sources, so setup is a build step in the checkout.
 
-Sound, browser tools and the general extensions are separate selections. Add the
-general extensions (`ask`, `py`, `/tools` and more) and the browser tools with:
-
-```sh
-"$PHIMACS_PI" install "$PWD/packages/extensions"
-"$PHIMACS_PI" install "$PWD/packages/browser"
-```
-
-[Sound](#share-the-devices-microphone-speaker-and-notifications) needs more setup.
 Pi can execute tools and load project resources; review its project-trust prompts.
 Do not turn an unknown project into a trusted installation fixture.
+
+### Optional Pi packages
+
+The general extensions (`ask`, `py`, `/tools` and more), the browser tools and
+sound are separate selections. From the checkout, run only the commands for the
+packages that you want:
+
+```sh
+"${PHIMACS_PI:-pi}" install "$PWD/packages/extensions"
+"${PHIMACS_PI:-pi}" install "$PWD/packages/browser"
+"${PHIMACS_PI:-pi}" install "$PWD/packages/sound"
+```
+
+Sound also needs a [configured backend](../packages/sound/README.md#configuration).
+For the 🎤 button and keys in Emacs, put `(setq phimacs-enable-sound t)` in the
+override file, and set `pi-sound-program` to the checkout's
+`packages/sound/dist/main.js` unless `pi-sound` is on PATH.
 
 ## Start Phimacs
 
@@ -283,7 +302,7 @@ Run `phimacs` from a project directory: that directory is the default for a new
 deck space (`M-m d S`). Quit the client frame with `M-m q q`, or the whole Emacs
 daemon with `M-m q Q`. Agents keep running in the service either way, and
 accepted work can continue and incur usage without a visible frontend. The
-[demo](demo/README.md) shows this.
+[demo](demo/README.md) shows two projects at work at the same time.
 
 `phimacs pi [ARGS]` instead opens Pi's own terminal UI under pimux's writer claim.
 It starts neither the service nor Emacs, and the terminal owns its lifetime; see
@@ -380,11 +399,8 @@ A device can lend its microphone, speaker and desktop notifications to the host,
 for dictation, deck sounds, speech playback and deck notifications. This is
 opt-in on both sides.
 
-On the host, configure [sound](../packages/sound/README.md): install its Pi
-extension (`"$PHIMACS_PI" install "$PWD/packages/sound"`); in the override file,
-enable it in the profile (`(setq phimacs-enable-sound t)`) and set
-`pi-sound-program` to the checkout's `packages/sound/dist/main.js` unless
-`pi-sound` is on PATH; and set `"share": true` in `PI_CODING_AGENT_DIR/voice.json`
+On the host, add and enable sound as [optional Pi packages](#optional-pi-packages)
+describes, and set `"share": true` in `PI_CODING_AGENT_DIR/voice.json`
 instead of a `capture` command, together with a transcription backend for
 dictation. With `share` selected there is no fallback
 to the host's own devices: no connected device is an error.
@@ -513,21 +529,21 @@ Activate the prepared dependencies/native assets from your own init:
 ```
 
 Install the maintained Pilish **before deck**, from the same repository and
-release tag. package-vc clones `:rev` with `git clone --branch`, which accepts a
-tag; a full commit hash works too. Stock/archive Pilish may have a numerically newer version while
+revision. package-vc clones `:rev` with `git clone --branch`, which accepts a
+branch or tag; a full commit hash works too. Stock/archive Pilish may have a numerically newer version while
 lacking the detached runtime; pi-deck refuses to load against it. The explicit
 `:vc` source matters; a package-version constraint is not sufficient.
 
 ```elisp
 (use-package pilish
-  :vc (:url "https://github.com/offline-ant/phimacs" :rev "v0.1.0"
+  :vc (:url "https://github.com/offline-ant/phimacs" :rev "main"
        :lisp-dir "emacs/pilish")
   :demand t
   :config
   (pilish-configure-runtime :pi-executable "/absolute/selected/pi"
                             :pimux-executable "/absolute/phimacs/packages/pimux/bin/pimux"))
 (use-package pi-deck
-  :vc (:url "https://github.com/offline-ant/phimacs" :rev "v0.1.0"
+  :vc (:url "https://github.com/offline-ant/phimacs" :rev "main"
        :lisp-dir "emacs/pi-deck")
   :commands pi-deck-mode)
 ```
