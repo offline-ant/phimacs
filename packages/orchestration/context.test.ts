@@ -49,9 +49,9 @@ test("inherited sessions fork before sibling calls without changing parent branc
       childFiles.push(child.sessionFile);
       const fork = SessionManager.open(child.sessionFile);
       assert.equal(child.sessionId, fork.getHeader()!.id);
-      assert.equal(fork.getSessionName(), `R] ${id}.ts`);
+      assert.equal(fork.getSessionName(), `☀️ ${id}.ts`);
       assert.deepEqual(fork.getEntries().filter((entry) => entry.type === "session_info").map((entry) => entry.name),
-        ["Original parent title", "Later parent title", `R] ${id}.ts`]);
+        ["Original parent title", "Later parent title", `☀️ ${id}.ts`]);
       assert.equal(fork.getHeader()!.parentSession, parentFile);
       assert.equal(fork.getBranch().filter((entry) => entry.type === "message").length, 1);
       assert.deepEqual(child.args, ["--provider", "other", "--model", "alternate", "--thinking", "high"]);
@@ -72,11 +72,11 @@ test("inherited sessions fork before sibling calls without changing parent branc
     assert.equal(project.cwd, otherFolder);
     assert.equal(project.sessionId, SessionManager.open(project.sessionFile).getHeader()!.id);
     assert.equal(SessionManager.open(project.sessionFile).getCwd(), otherFolder);
-    assert.equal(SessionManager.open(project.sessionFile).getSessionName(), "B] independent module.ts");
+    assert.equal(SessionManager.open(project.sessionFile).getSessionName(), "🔨 independent module.ts");
     const clean = prepareDelegateSession({ tool: "fresh_look", task: "READ-ONLY review of the src/module.ts", folder: otherFolder }, ctx, { toolName: "fresh_look", toolCallId: "a" }, runtime);
     childFiles.push(clean.sessionFile);
     assert.equal(clean.cwd, otherFolder);
-    assert.equal(SessionManager.open(clean.sessionFile).getSessionName(), "R] read-only module.ts");
+    assert.equal(SessionManager.open(clean.sessionFile).getSessionName(), "☀️ read-only module.ts");
     assert.equal(SessionManager.open(clean.sessionFile).getBranch().filter((entry) => entry.type === "message").length, 0);
     assert.ok(clean.args.includes("--no-context-files"));
     assert.ok(!clean.args.includes("--no-extensions"));

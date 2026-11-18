@@ -172,14 +172,14 @@ another Pi child. Shell panels do not consume worker nesting depth.
   Fixed whole-word fillers that repeat the tree or only add emphasis (`only`,
   `separate`, `distinct`, `new`, `subtask`, `genuinely`, `actual`, `actually`,
   `independently`, `agreed`, `a`, `the`) are removed. Leading whole-word actions,
-  ignoring case and an optional trailing colon, become Review → `R]`,
-  Implement and Build → `B]`, Investigate → `I]`, Verify → `V]`. Fix stays a word. An
-  opening pair joined by `and` or `&` combines prefixes in order: `Review and
-  implement` → `RB]`. Up to three leading qualifiers (`read-only`, `independent`,
+  ignoring case and an optional trailing colon, become Review → `☀️`,
+  Implement and Build → `🔨`, Investigate → `🔍`, Verify → `⚖️`. Fix stays a word. An
+  opening pair joined by `and` or `&` combines icons in order: `Review and
+  implement` → `☀️🔨`. Up to three leading qualifiers (`read-only`, `independent`,
   `final`, `fresh-eyes`, `fresh`, `focused`, `narrow`, `critical(ly)`,
   `adversarial`, `second`, `small`, `quick`) may precede the action and stay
   lowercased after the prefix, and one `of`/`for` directly after the action is
-  dropped: `Final fresh-eyes review of diff` → `R] final fresh-eyes diff`.
+  dropped: `Final fresh-eyes review of diff` → `☀️ final fresh-eyes diff`.
   Other openings, later actions, negations and filename components stay intact.
   Replacement precedes the 60-Unicode-code-point limit; titles fall back to the
   unfiltered excerpt when filler removal removes everything. There is no title argument or extra model

@@ -6,8 +6,8 @@ const fillers = new Set(["only", "separate", "distinct", "new", "subtask", "genu
   "independently", "agreed", "a", "the"]);
 const qualifiers = new Set(["read-only", "independent", "final", "fresh-eyes", "fresh", "focused",
   "narrow", "critical", "critically", "adversarial", "second", "small", "quick"]);
-const actions = new Map([["review", "R"], ["implement", "B"], ["build", "B"], ["investigate", "I"],
-  ["verify", "V"]]);
+const actions = new Map([["review", "☀️"], ["implement", "🔨"], ["build", "🔨"], ["investigate", "🔍"],
+  ["verify", "⚖️"]]);
 
 /** A short display title, never a worker's operational/recovery identity. */
 export function workerTitle(task: string): string {
@@ -52,7 +52,7 @@ export function workerTitle(task: string): string {
   let rest = start + (combined ? 3 : 1);
   if (first && /^(?:of|for)$/.test(words[rest]?.key ?? "")) rest++;
   const title = (first
-    ? [`${first}${combined ? second : ""}]`, ...words.slice(0, start).map((token) => token.text.toLowerCase()),
+    ? [`${first}${combined ? second : ""}`, ...words.slice(0, start).map((token) => token.text.toLowerCase()),
       ...words.slice(rest).map((token) => token.text)]
     : words.map((token) => token.text)).join(" ") || "Worker";
   const characters = Array.from(title);
