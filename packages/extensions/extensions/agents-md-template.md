@@ -1,7 +1,7 @@
-# <Project name>
+# [Project name]
 
-<One or two sentences: what this project enables. Point to the documents that
-own its design, commands and layout instead of restating them.>
+[One or two sentences: what this project enables. Point to the documents that
+own its design, commands and layout instead of restating them.]
 
 ## Reading and documentation
 
@@ -37,6 +37,8 @@ own its design, commands and layout instead of restating them.>
 ## Style and tests
 
 - Keep prose technical and concise.
+- Communicate 80% of the way to ASD-STE100 Simplified Technical English; keep
+  technical terms.
 - Keep source files under 1000 lines; split before 1500.
 - Run the smallest meaningful checks, including changed tests. Prefer
   boundary-crossing tests in test files; skip tests for obvious behavior.

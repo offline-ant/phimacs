@@ -8,24 +8,28 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const TEMPLATE_URL = new URL("./agents-md-template.md", import.meta.url);
 
-export function initAgentsMdPrompt(template: string): string {
+/** The agent prompt; nonblank `extra` guides this update only. */
+export function initAgentsMdPrompt(template: string, extra = ""): string {
+  const instructions = extra.trim() ? `\n\nAdditional instructions for this update: ${extra.trim()}` : "";
   return `Create or update AGENTS.md in the current directory from the standard template below.
 
-- Fill in the title and the short introduction for this project. If AGENTS.md exists, keep its project-specific rules and replace overlapping generic rules with the template's wording; keep stricter local limits.
-- Add only very short project specifics: pointers to the documents and commands that own the truth (README, design docs, check commands), not the information itself. Keep global rules from the template; do not restate them.
-- Leave out template rules that clearly do not apply to this project.
-- Inspect the project before writing, and show a summary of the result.
+- First read any AGENTS.md and CLAUDE.md here, the README, and the files that define the project's commands.
+- Change only ./AGENTS.md. Keep its project rules, deliberate exceptions, stricter limits and links. Where a generic rule overlaps a template rule, use the template's wording. Ask if existing instructions conflict with the template.
+- Pi reads AGENTS.md instead of CLAUDE.md in the same directory: carry CLAUDE.md's project rules into AGENTS.md, and leave CLAUDE.md unchanged.
+- Fill in the title and the short introduction. Add only very short project specifics: pointers to the documents and commands that own the truth (README, design docs, check commands), not the information itself.
+- Include each applicable template rule once, in the template's wording. Leave out rules that clearly do not apply to this project.
+- Check the links and commands that you name, then show a short summary of what changed.
 
 <template>
-${template}</template>`;
+${template}</template>${instructions}`;
 }
 
 export default function (pi: ExtensionAPI) {
   pi.registerCommand("init-agents-md", {
-    description: "Create or update AGENTS.md from the standard rules template",
-    handler: async (_args, ctx) => {
+    description: "Create or update AGENTS.md from the standard rules template; arguments add instructions for this update",
+    handler: async (args, ctx) => {
       await ctx.waitForIdle();
-      pi.sendUserMessage(initAgentsMdPrompt(await readFile(TEMPLATE_URL, "utf8")));
+      pi.sendUserMessage(initAgentsMdPrompt(await readFile(TEMPLATE_URL, "utf8"), args));
     },
   });
 }

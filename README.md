@@ -55,6 +55,13 @@ A worker can also run on a second model: choose the model pair with
 conversation or project instructions. It is off by default; turn it on with
 `/tools`, which comes with the extensions package.
 
+## My AGENTS.md rules
+
+[agents-md-template.md](packages/extensions/extensions/agents-md-template.md)
+holds the rules that I give my coding agents in most projects. You can copy
+them without Phimacs. With the extensions package, `/init-agents-md` asks the
+agent to create or update a project's `AGENTS.md` from them.
+
 ## Status
 
 Early: version 0.1.0. I use it every day, but expect rough edges. It runs on

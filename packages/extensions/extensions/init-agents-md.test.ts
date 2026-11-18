@@ -21,5 +21,8 @@ test("/init-agents-md submits the template after the agent is idle", async () =>
 
   const template = readFileSync(new URL("./agents-md-template.md", import.meta.url), "utf8");
   assert.equal(events[0], "idle");
-  assert.ok(events[1]?.includes(`<template>\n${template}</template>`));
+  assert.ok(events[1]?.endsWith(`<template>\n${template}</template>`));
+
+  await handler!("  focus on the SDK folder ", ctx);
+  assert.ok(events[3]?.endsWith(`</template>\n\nAdditional instructions for this update: focus on the SDK folder`));
 });
