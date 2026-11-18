@@ -237,8 +237,8 @@ The replayed start is not the run's start, so its duration is unknown."
     (unwind-protect
         (pilish-test-with-rpc-session (chat input proc commands)
           (let ((pilish-session-identity-functions
-                 (list (lambda (buffer)
-                         (push (pilish-session-file buffer) identities)))))
+                 (list (lambda (buffer file directory name)
+                         (push (list buffer file directory name) identities)))))
             (pilish-shared-test--hello proc)
             (with-current-buffer input (insert "my draft"))
             (with-current-buffer chat
@@ -258,7 +258,9 @@ The replayed start is not the run's start, so its duration is unknown."
             (should (equal (pilish-session-file chat) "/tmp/new.jsonl"))
             (should (equal (pilish-session-directory chat) dir))
             (should (equal (pilish-session-title chat) "Fresh"))
-            (should (equal (car identities) "/tmp/new.jsonl"))
+            ;; Retarget and reset must not publish the old file at the new cwd.
+            (should (equal identities
+                           (list (list chat "/tmp/new.jsonl" dir (buffer-name chat)))))
             (should (equal (plist-get (pilish-session-model chat) :id) "two"))
             (with-current-buffer chat
               (should-not (string-match-p "old transcript" (buffer-string)))
@@ -273,6 +275,26 @@ The replayed start is not the run's start, so its duration is unknown."
             (should (seq-find (lambda (c) (equal (plist-get c :type) "get_commands"))
                               commands))))
       (delete-directory dir t))))
+
+(ert-deftest pilish-shared-test-snapshot-confirms-transition-identity ()
+  "A shared state boundary confirms identity without a get_state response."
+  (pilish-test-with-rpc-session (chat _input proc _commands)
+    (pilish-shared-test--hello proc)
+    (let* (identities
+           (pilish-session-identity-functions
+            (list (lambda (buffer file directory name)
+                    (push (list buffer file directory name) identities))))
+           (generation (with-current-buffer chat
+                         (pilish--begin-session-transition proc))))
+      (pilish-test--stdout proc (pilish-shared-test--snapshot 1 "request" nil)
+                           '(:type "pimux_live" :generation 1))
+      (should-not identities)
+      (with-current-buffer chat (pilish--finish-session-transition generation))
+      (pilish-test--stdout proc (pilish-shared-test--snapshot 2 "gap" nil)
+                           '(:type "pimux_live" :generation 2))
+      (should (equal identities
+                     (list (list chat "/tmp/s1.jsonl" (pilish-session-directory chat)
+                                 (buffer-name chat))))))))
 
 (ert-deftest pilish-shared-test-gap-snapshot-adopts-a-session-it-missed ()
   "A client that lost the session change adopts it from the gap's snapshot."
@@ -292,6 +314,39 @@ The replayed start is not the run's start, so its duration is unknown."
           (should (equal (pilish-session-directory chat) dir))
           (should (eq (pilish-session-process chat) proc)))
       (delete-directory dir t))))
+
+(ert-deftest pilish-shared-test-alias-snapshot-keeps-session-view ()
+  "Alias spellings do not retarget the view or replace its extensions."
+  (let* ((root (pilish-test--make-temp-directory "pi-shared-alias-"))
+         (dir (file-name-as-directory (expand-file-name "project" root)))
+         (alias (expand-file-name "alias" root)))
+    (unwind-protect
+        (pilish-test-with-rpc-session (chat input proc commands)
+          (make-directory dir)
+          (make-symbolic-link dir alias)
+          (pilish-shared-test--hello proc)
+          (let* (identities
+                 (pilish-session-identity-functions
+                  (list (lambda (buffer file directory name)
+                          (push (list buffer file directory name) identities)))))
+            (pilish-test--stdout proc (pilish-shared-test--snapshot
+                                       1 "request" nil :cwd dir
+                                       :file (expand-file-name "s.jsonl" dir))
+                                 '(:type "pimux_live" :generation 1))
+            (let ((input-name (buffer-name input)) (chat-name (buffer-name chat)))
+              (setq commands nil)
+              (pilish-test--stdout proc (pilish-shared-test--snapshot
+                                         2 "gap" nil :cwd alias
+                                         :file (expand-file-name "s.jsonl" alias))
+                                   '(:type "pimux_live" :generation 2))
+              (should (equal (pilish-session-file chat) (expand-file-name "s.jsonl" alias)))
+              (should (equal (buffer-name input) input-name))
+              (should (equal (buffer-name chat) chat-name))
+              (should (equal identities
+                             (list (list chat (expand-file-name "s.jsonl" dir) dir chat-name))))
+              (should-not (seq-find (lambda (c) (equal (plist-get c :type) "get_commands"))
+                                    commands)))))
+      (delete-directory root t))))
 
 (ert-deftest pilish-shared-test-adoption-takes-a-free-name-on-collision ()
   "A session moving where another chat has this one's name gets a free name."
@@ -456,7 +511,7 @@ The dialog has to work while that response is outstanding."
           (setq pilish--state (list :session-file "/tmp/s1.jsonl"))
           ;; Without an extension command Pi cannot reload in place.
           (pilish-reload (lambda (reason) (push reason outcomes)))
-          (should (equal outcomes '("Tracked by its parent")))
+          (should (equal outcomes '((failed . "Tracked by its parent"))))
           (should-not commands)
           (setq pilish--commands '((:name "reload" :source "extension")))
           (pilish-reload (lambda (reason) (push reason outcomes))))
@@ -466,7 +521,7 @@ The dialog has to work while that response is outstanding."
           (pilish-test--stdout
            proc (list :type "response" :id (plist-get prompt :id) :command "prompt"
                       :success t :data '(:disposition "handled"))))
-        (should (equal outcomes '(nil "Tracked by its parent")))
+        (should (equal outcomes '(nil (failed . "Tracked by its parent"))))
         (should (equal (plist-get (car commands) :type) "get_commands"))))))
 
 (ert-deftest pilish-shared-test-own-session-transition-is-not-rebuilt-twice ()

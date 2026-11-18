@@ -205,9 +205,10 @@ Nothing is saved during a restore: the file still lists what remains."
       (setq pi-deck--saved-structure structure)
       (pi-deck-schedule-save))))
 
-(defun pi-deck--on-session-identity (chat-buffer)
-  "Save after CHAT-BUFFER adopts an authoritative runtime/session identity.
-Runtime identity, not a stale saved filename, controls desktop reconnection."
+(defun pi-deck--on-session-change (chat-buffer &rest _identity)
+  "Refresh and save CHAT-BUFFER after an identity or desktop state change.
+Only the identity hook also supplies the session file, directory and name.
+The save reads the current desktop state from Pilish."
   (when (buffer-live-p chat-buffer)
     (pi-deck-refresh-agent chat-buffer)
     (pi-deck--schedule-update)

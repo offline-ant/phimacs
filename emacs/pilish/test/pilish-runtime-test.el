@@ -419,8 +419,9 @@
                          (setq discovery callback))
                      (setq launch callback))
                    nil)))
+        (with-current-buffer pilish-runtime-test--chat
+          (pilish--set-launch-options nil '(("PIMUX_DIR" . "/fixture/mux"))))
         (pilish--runtime-start-view pilish-runtime-test--chat directory nil
-                                    '(("PIMUX_DIR" . "/fixture/mux"))
                                     (lambda (error) (push error outcomes)))
         (should-not discovery)
         (funcall launch
@@ -462,7 +463,7 @@
                            (setq discovery callback))
                        (setq launch callback))
                      nil)))
-          (pilish--runtime-start-view pilish-runtime-test--chat directory nil nil
+          (pilish--runtime-start-view pilish-runtime-test--chat directory nil
                                       (lambda (error) (push error outcomes)))
           (funcall launch
                    (list :protocol 2 :state "committed" :outcome "started"
@@ -501,7 +502,7 @@
                      ("list" (setq discovery callback))
                      (_ (ert-fail "Unconfirmed placement dispatched runtime control")))
                    nil)))
-        (pilish--runtime-start-view pilish-runtime-test--chat directory nil nil
+        (pilish--runtime-start-view pilish-runtime-test--chat directory nil
                                     (lambda (error) (push error startup-outcomes)))
         (funcall launch
                  (list :protocol 2 :state "committed" :outcome "started"
@@ -538,7 +539,7 @@
                                           (funcall callback nil "Discovery cancelled"))))
                      (setq launch callback)
                      nil))))
-        (pilish--runtime-start-view pilish-runtime-test--chat directory nil nil
+        (pilish--runtime-start-view pilish-runtime-test--chat directory nil
                                     (lambda (error) (push error outcomes)))
         (funcall launch
                  (list :protocol 2 :state "committed" :outcome "started"
@@ -566,7 +567,7 @@
         (unwind-protect
             (progn
               (should-not (pilish-session-runtime-pending-p chat))
-              (pilish--runtime-start-view chat directory nil nil
+              (pilish--runtime-start-view chat directory nil
                                           (lambda (error) (push error outcomes)))
               ;; Awaiting the commitment receipt: starting, still without a transport.
               (should (pilish-session-runtime-pending-p chat))
@@ -613,6 +614,20 @@
                (lambda (&rest _) (ert-fail "Implicit runtime replacement"))))
       (should (eq pilish-runtime-test--chat
                   (pilish--setup-session (file-name-as-directory directory) "unavailable"))))))
+
+(ert-deftest pilish-runtime-test-launcher-environment-is-process-local ()
+  "The launcher receives the first override, without changing Emacs's zone."
+  (let* ((pilish-runtime-pimux-executable (executable-find "sh"))
+         (zone (current-time-zone))
+         (tz (if (equal (car zone) 50400) "UTC0" "UTC-14"))
+         answer)
+    (pilish--runtime-call
+     '("-c" "printf '\"%s\"' \"$TZ\"") temporary-file-directory
+     (list (cons "TZ" tz) '("TZ" . "later"))
+     (lambda (value error) (setq answer (list value error))))
+    (pilish-runtime-test--wait (lambda () answer))
+    (should (equal answer (list tz nil)))
+    (should (equal (current-time-zone) zone))))
 
 (ert-deftest pilish-runtime-test-configuration-rejects-unsafe-runtime-inputs ()
   (should-error (pilish-configure-runtime :pi-executable "pi" :pimux-executable "pimux"))

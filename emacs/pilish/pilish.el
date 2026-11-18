@@ -71,7 +71,8 @@
 ;;     C-c C-r        Browse sessions
 ;;     M-p / M-n      History navigation
 ;;     <up> / <down>  Pi-style history with `pilish-input-arrow-history'
-;;     C-r            Incremental history search (like readline)
+;;     M-r            Incremental prompt-history search
+;;     C-r            Incremental search within the draft
 ;;     TAB            Path/file completion
 ;;     @              File reference (search project files)
 ;;
@@ -125,6 +126,8 @@
 
 ;;; Code:
 
+(require 'cl-lib)
+(require 'pilish-ui)
 (require 'pilish-menu)
 (require 'pilish-shared)
 (require 'pilish-input)
@@ -158,6 +161,144 @@ Reads and rendering are synchronous, including for remote files."
       (user-error "Not a readable Pi session: %s" file))
     (pilish-open-subagent-snapshot target)))
 
+;;;; Session Inspection
+
+;; Buffer resolution and copying live in pilish-ui for extension-status hooks.
+
+(defun pilish--session-value (buffer variable &optional key)
+  "Copy VARIABLE's value from BUFFER's chat, or nil without a chat.
+When KEY is non-nil, copy that plist member instead of the whole value."
+  (when-let* ((chat (pilish-session-chat-buffer buffer)))
+    (let ((value (buffer-local-value variable chat)))
+      (pilish--copy-session-value (if key (plist-get value key) value)))))
+
+(defun pilish-session-input-buffer (&optional buffer)
+  "Return the live input buffer owned by BUFFER's session, or nil.
+BUFFER follows `pilish-session-chat-buffer'.  No input is created."
+  (when-let* ((chat (pilish-session-chat-buffer buffer))
+              (input (buffer-local-value 'pilish--input-buffer chat))
+              ((buffer-live-p input)))
+    (with-current-buffer input
+      (and (derived-mode-p 'pilish-input-mode)
+           (eq pilish--chat-buffer chat)
+           input))))
+
+(defun pilish-session-process (&optional buffer)
+  "Return BUFFER's session process, or nil if none was assigned.
+BUFFER follows `pilish-session-chat-buffer'.  The returned process may have
+exited; use `process-live-p' to check it.  This does not start a process.
+For detached views it is the transport, a network connection, not the
+actual Pi process; use `pilish-session-process-identity' for that."
+  (when-let* ((chat (pilish-session-chat-buffer buffer))
+              (process (buffer-local-value 'pilish--process chat)))
+    (and (processp process) process)))
+
+(defun pilish-session-directory (&optional buffer)
+  "Return a copy of BUFFER's session directory, or nil without a session.
+BUFFER follows `pilish-session-chat-buffer'.  The directory stays tied to
+the session even when its chat visits a Markdown transcript elsewhere."
+  (when-let* ((chat (pilish-session-chat-buffer buffer)))
+    (pilish--copy-session-value (pilish--chat-session-directory chat))))
+
+(defun pilish-session-name (&optional buffer)
+  "Return BUFFER's named-session suffix, or nil for the default session.
+BUFFER follows `pilish-session-chat-buffer'.  This is the Emacs session
+name, not Pi's conversation title; the returned string is a copy."
+  (pilish--session-value buffer 'pilish--canonical-session-name))
+
+(defun pilish-session-title (&optional buffer)
+  "Return a copy of Pi's conversation title for BUFFER, or nil if unnamed.
+BUFFER follows `pilish-session-chat-buffer'."
+  (let ((title (pilish--session-value buffer 'pilish--session-name)))
+    (and (stringp title) (not (string-empty-p title)) title)))
+
+(defun pilish-session-file (&optional buffer)
+  "Return a copy of BUFFER's last reported Pi session pathname, or nil.
+BUFFER follows `pilish-session-chat-buffer'.  This is not the chat's
+visited Markdown transcript file, and no disk or RPC lookup is made."
+  (pilish--session-value buffer 'pilish--state :session-file))
+
+(defun pilish-session-model (&optional buffer)
+  "Return BUFFER's last reported model plist, or nil if unknown.
+BUFFER follows `pilish-session-chat-buffer'.  The result (including nested
+values) is a copy; typical keys include :id, :name and :provider."
+  (pilish--session-value buffer 'pilish--state :model))
+
+(defun pilish-session-context-usage (&optional buffer)
+  "Return BUFFER's last reported context usage plist, or nil if unknown.
+BUFFER follows `pilish-session-chat-buffer'.  The result is a copy, with
+keys such as :percent, :tokens and :contextWindow.  No RPC is sent."
+  (pilish--session-value buffer 'pilish--cached-stats :contextUsage))
+
+(defun pilish-session-queued-prompts (&optional buffer)
+  "Return a copy of BUFFER's known queued prompt texts, or nil if none.
+BUFFER follows `pilish-session-chat-buffer'.  Order matches the header:
+Pi's reported follow-ups, local follow-ups in FIFO order, then reported
+steering.  Unreported Pi queues are not included."
+  (when-let* ((chat (pilish-session-chat-buffer buffer)))
+    (pilish--copy-session-value
+     (apply #'append (pilish--queued-prompt-groups chat)))))
+
+(defun pilish-session-running-tools (&optional buffer)
+  "Return a copy of BUFFER's known unfinished root tool call IDs.
+BUFFER follows `pilish-session-chat-buffer'.  Order is unspecified.
+The live registry includes announced or executing calls with an observed
+ID, not argument-streaming previews without authoritative IDs.  Completed,
+cooled and saved-history blocks are excluded.  No RPC is sent; an
+unobserved backend tool is unknown, not necessarily absent."
+  (when-let* ((chat (pilish-session-chat-buffer buffer))
+              (live (buffer-local-value 'pilish--live-tool-blocks chat)))
+    (let (ids)
+      (maphash (lambda (id _block)
+                 (push (pilish--copy-session-value id) ids))
+               live)
+      ids)))
+
+(defun pilish-session-busy-p (&optional buffer)
+  "Return non-nil when BUFFER's session has active or known queued work.
+BUFFER follows `pilish-session-chat-buffer'.  This observed-work policy
+includes pending prompts, model/session changes, compaction, non-idle
+activity, known queues and unfinished tools, not just streamed output.
+It is broader than the send-readiness predicate.  No RPC or fresh Pi
+query is made, and nothing is copied, so frequent polling is cheap."
+  (when-let* ((chat (pilish-session-chat-buffer buffer)))
+    (and (pilish--session-observed-work-p chat) t)))
+
+(defun pilish-session-input-context (chat-buffer)
+  "Copy CHAT-BUFFER's owning input context after its successful live boundary.
+Return nil for unshared or unavailable views.  Capture this before asynchronous
+work and pass it to `pilish-submit-prompt'; never infer it from the moving leaf."
+  (when (buffer-live-p chat-buffer)
+    (let ((proc (buffer-local-value 'pilish--process chat-buffer)))
+      (when (and (processp proc) (process-get proc 'pilish-detached)
+                 (pilish--shared-input-ready-p proc))
+        (pilish--capture-input-context proc)))))
+
+(defun pilish-close-session (chat-buffer &optional callback)
+  "Close CHAT-BUFFER's agent everywhere without confirmation.
+CALLBACK receives nil after authoritative termination and view removal, or
+an error string on failure/uncertainty.  Failed closes retain local input.
+Workers use their owning task's cancellation, never root-stop fallback."
+  (pilish--runtime-close-session chat-buffer callback))
+
+(defun pilish-disconnect-session (chat-buffer)
+  "Dispose CHAT-BUFFER's local view without stopping a detached agent.
+For frontend/orchestration teardown only; normal user Close stops the agent.
+Unshared Pi retains its native buffer/process lifetime."
+  (pilish--dispose-session-view chat-buffer))
+
+;;;###autoload
+(defun pilish-session-exists-p (directory &optional name)
+  "Return non-nil when DIRECTORY's session NAME has a chat buffer.
+NAME nil means the directory's default session.  Stopped sessions count;
+no process is started.  The chat is found by its session identity, so a
+chat renamed or visiting a transcript still counts; an input buffer
+without a live chat does not.  Every session that exists can be inspected
+with the other session accessors.  DIRECTORY is expanded with a trailing
+slash, not resolved through symlinks, matching Pilish's normal lookup."
+  (and (pilish--find-session (pilish--normalize-directory directory) name)
+       t))
+
 ;;;; Main Entry Point
 
 (defcustom pilish-evil-integration t
@@ -175,41 +316,23 @@ Evil states apply to them."
   (when (and pilish-evil-integration (featurep 'evil))
     (require 'pilish-evil nil t)))
 
-(defvar treesit-auto-install-grammar)
-
-(defvar pilish-session-environment-functions nil
-  "Functions supplying environment overrides before a session's first spawn.
-Each function receives CHAT-BUFFER and DIRECTORY and returns an environment
-alist.  Explicit `pilish-start-session' overrides take precedence, followed
-by functions in hook order.  The combined environment survives reload.
-This applies to interactive and non-displaying sessions alike.")
-
-(defun pilish--session-environment (chat-buf dir)
-  "Return the environment `pilish-session-environment-functions' supply.
-Each function gets CHAT-BUF and DIR; one that fails is reported as a
-warning and contributes nothing."
-  (apply #'append
-         (mapcar (lambda (function)
-                   (condition-case-unless-debug err
-                       (funcall function chat-buf dir)
-                     (error
-                      (display-warning
-                       'pilish
-                       (format "Session environment function %S failed: %s"
-                               function (error-message-string err))
-                       :error)
-                      nil)))
-                 pilish-session-environment-functions)))
-
-(defun pilish--setup-session
-    (dir &optional session args environment on-ready background session-file)
-  "Set up a session for DIR with optional SESSION name.
-ARGS and ENVIRONMENT apply only to a newly started process.
-Call ON-READY with the first get_state response, without blocking startup.
-BACKGROUND suppresses interactive dependency installation prompts.
-SESSION-FILE, already passed in ARGS, has its history rendered.
-Returns the chat buffer without displaying it."
+(cl-defun pilish--setup-session
+    (dir &optional session &key args environment background on-ready session-file)
+  "Set up a new or existing session for DIR with optional SESSION name.
+A new session keeps ARGS and ENVIRONMENT as its own launch options (see
+`pilish--launch-options').  BACKGROUND means nobody is there to answer
+questions, as for `pilish--check-dependencies'.  ON-READY receives the
+first state response of a newly started session, without blocking
+startup; a detached view reports its start as such a response.  A detached
+launch opens SESSION-FILE directly when specified.
+Returns the chat buffer."
   (pilish--maybe-load-evil-integration)
+  ;; Install essential grammars before buffer creation runs Markdown modes.
+  (let ((existing (pilish--find-session dir session)))
+    (unless (and existing
+                 (with-current-buffer existing
+                   (and pilish--process (process-live-p pilish--process))))
+      (pilish--check-dependencies dir background)))
   (let* ((chat-buf (pilish--get-or-create-buffer :chat dir session))
          (input-buf (pilish--get-or-create-buffer :input dir session))
          (new-session nil))
@@ -218,16 +341,15 @@ Returns the chat buffer without displaying it."
       (pilish--set-chat-session-identity dir session)
       (pilish--set-input-buffer input-buf)
       (add-hook 'kill-buffer-hook #'pilish--runtime-kill-view nil t)
+      (unless pilish--launch-options
+        (pilish--set-launch-options args environment))
       ;; Managed views own only a socket, not the detached Pi lifetime.  Existing
       ;; stopped/disconnected views need an explicit Reconnect/Resume action.
       (if (pilish-runtime-configured-p)
           (unless pilish--runtime
-            (setq pilish--launch-args args
-                  pilish--launch-environment
-                  (append environment (pilish--session-environment chat-buf dir))
-                  new-session t)
+            (setq new-session t)
             (pilish--runtime-start-view
-             chat-buf dir pilish--launch-args pilish--launch-environment
+             chat-buf dir session-file
              (lambda (error)
                (when (buffer-live-p chat-buf)
                  (with-current-buffer chat-buf
@@ -239,216 +361,173 @@ Returns the chat buffer without displaying it."
                                             :model (plist-get pilish--state :model)))))))))))
         ;; Explicit unshared mode retains its native stdio process contract.
         (unless (and pilish--process (process-live-p pilish--process))
-        (unless background (pilish--check-dependencies dir))
-        (setq pilish--launch-args args
-              pilish--launch-environment
-              (append environment (pilish--session-environment chat-buf dir)))
-        (pilish--set-process
-         (pilish--start-process dir pilish--launch-args pilish--launch-environment))
-        (setq new-session t)
-        ;; Associate process events and ownership with this chat buffer.
-        (when (processp pilish--process)
-          (set-process-buffer pilish--process chat-buf)
-          (process-put pilish--process 'pilish-chat-buffer chat-buf)
-          ;; Register event handler
-          (pilish--register-display-handler pilish--process)
-          ;; Initialize state from server
-          (let ((buf chat-buf)
-                (proc pilish--process)
-                (generation pilish--session-transition-generation))
-            (pilish--rpc-async proc '(:type "get_state")
-              (lambda (response)
-                (if (eq (plist-get response :success) t)
-                    (when (pilish--session-transition-current-p buf proc generation)
-                      (pilish--apply-state-response buf response)
-                      ;; Check if no model available and warn user
-                      (when (buffer-live-p buf)
-                        (with-current-buffer buf
-                          (unless (plist-get pilish--state :model)
-                            (pilish--display-no-model-warning)))))
+          (pilish--set-process (pilish--start-session-process dir))
+          (setq new-session t)
+          ;; Associate process events and ownership with this chat buffer.
+          (when (processp pilish--process)
+            (set-process-buffer pilish--process chat-buf)
+            (process-put pilish--process 'pilish-chat-buffer chat-buf)
+            ;; Register event handler
+            (pilish--register-display-handler pilish--process)
+            ;; Initialize state from server
+            (let ((buf chat-buf)
+                  (proc pilish--process)
+                  (generation pilish--session-transition-generation))
+              (pilish--rpc-async proc '(:type "get_state")
+                (lambda (response)
+                  (if (eq (plist-get response :success) t)
+                      (when (pilish--session-transition-current-p buf proc generation)
+                        (pilish--apply-state-response buf response)
+                        ;; Check if no model available and warn user
+                        (when (buffer-live-p buf)
+                          (with-current-buffer buf
+                            (unless (plist-get pilish--state :model)
+                              (pilish--display-no-model-warning)))))
+                    (when (buffer-live-p buf)
+                      (with-current-buffer buf
+                        (when (eq pilish--process proc)
+                          (pilish--display-startup-error
+                           (plist-get response :error)
+                           (plist-get response :stderr)
+                           (plist-get response :exitCode))
+                          ;; Core invokes pending callbacks before the generic exit
+                          ;; handler.  Remember this dead process was rendered so
+                          ;; that handler does not append the same diagnostic again.
+                          (when (and (plist-get response :processExit)
+                                     (processp proc)
+                                     (not (process-live-p proc)))
+                            (process-put
+                             proc 'pilish-exit-error-rendered t))))))
+                  (when on-ready (funcall on-ready response))))
+              ;; Fetch commands via RPC (independent of get_state)
+              (pilish--fetch-commands proc
+                (lambda (commands)
                   (when (buffer-live-p buf)
                     (with-current-buffer buf
-                      (when (eq pilish--process proc)
-                        (pilish--display-startup-error
-                         (plist-get response :error)
-                         (plist-get response :stderr)
-                         (plist-get response :exitCode))
-                        ;; Core invokes pending callbacks before the generic exit
-                        ;; handler.  Remember this dead process was rendered so
-                        ;; that handler does not append the same diagnostic again.
-                        (when (and (plist-get response :processExit)
-                                   (processp proc)
-                                   (not (process-live-p proc)))
-                          (process-put
-                           proc 'pilish-exit-error-rendered t))))))
-                (when on-ready (funcall on-ready response))))
-            (when session-file
-              (pilish--load-session-history proc nil buf))
-            ;; Fetch commands via RPC (independent of get_state)
-            (pilish--fetch-commands proc
-              (lambda (commands)
-                (when (buffer-live-p buf)
-                  (with-current-buffer buf
-                    (pilish--set-commands commands)
-                    (pilish--rebuild-commands-menu))))
-              dir)))))
+                      (pilish--set-commands commands)
+                      (pilish--rebuild-commands-menu))))
+                dir)))))
       ;; Display startup header for new sessions
       (when new-session
         (pilish--display-startup-header)))
     (with-current-buffer input-buf
-      (setq default-directory dir)
+      (setq-local default-directory dir
+                  list-buffers-directory dir)
       (pilish--set-chat-buffer chat-buf))
     chat-buf))
 
-(defun pilish-session-exists-p (directory name)
-  "Return non-nil when session NAME of DIRECTORY has a chat or input buffer.
-NAME nil means the directory's default session."
-  (let ((directory (pilish--normalize-directory directory)))
-    (or (pilish--find-session directory name)
-        (get-buffer (pilish--buffer-name :chat directory name))
-        (get-buffer (pilish--buffer-name :input directory name)))))
+(defvar treesit-auto-install-grammar)  ; Emacs 31+, in treesit.el
 
+;;;###autoload
 (cl-defun pilish-start-session
     (directory name &key session-file args environment on-ready)
-  "Create a non-displaying session in DIRECTORY and return its chat buffer.
-NAME is a nonempty session name, or nil for the directory's default session.
-It must not identify an existing session (see `pilish-session-exists-p').
-SESSION-FILE resumes that Pi session and renders its history.  ARGS (extra
-CLI arguments) and ENVIRONMENT (an alist) are private to this process and
-survive reload.  ON-READY receives the initial RPC state response
-asynchronously; creation never waits for Pi to finish."
-  (let ((directory (pilish--normalize-directory directory)))
-    (unless (or (null name) (and (stringp name) (not (string-empty-p name))))
-      (error "A session name must be nil or a nonempty string"))
-    (when (pilish-session-exists-p directory name)
-      (error "Pilish session already exists: %s" name))
+  "Start a session in DIRECTORY without displaying it.
+Return the session's chat buffer.  NAME names the session as
+\\[universal-argument] \\[pilish] does; nil selects DIRECTORY's default
+session.  Unlike \\[pilish], which shows a session that already exists,
+this signals an error for one: its launch options could not be applied,
+and a caller should not adopt a session it did not start.
+
+SESSION-FILE resumes that saved Pi session and renders its history.  Its
+recorded working directory must be DIRECTORY; a nil DIRECTORY means that
+recorded directory.
+
+ARGS is a list of extra Pi command-line arguments, placed after
+`pilish-extra-args'.  As for that variable, arguments that select Pi's
+mode or session, such as --mode, --session, --continue or --resume,
+break Pilish's RPC connection; use SESSION-FILE to resume.  ENVIRONMENT
+is an alist of (NAME . VALUE) overrides, where a nil VALUE removes NAME;
+it takes precedence over `pilish-session-environment-functions'.  Both
+apply to every Pi process of this session, including `pilish-reload',
+and to no other process.
+
+Dependencies are checked as by \\[pilish], except that nothing asks:
+a missing Pi executable is an error, and so are missing essential
+tree-sitter grammars when `pilish-essential-grammar-action' is `prompt'.
+With `auto' they are installed and with `warn' the session starts after
+a warning.  Optional grammars are not offered.
+
+Pilish does not wait for Pi.  Returning a buffer does not mean Pi has
+answered the initial state request or finished resuming.  ON-READY, if
+non-nil, receives the initial state response asynchronously; a detached
+view reports its start as such a response.  A failed dependency check,
+an invalid name, directory, SESSION-FILE, ARGS or ENVIRONMENT is an
+error that leaves no session behind.  Pi's later startup errors appear
+in the chat; a failed resume is reported in the echo area, as for
+interactive sessions.  `pilish-show-session' shows the session.
+
+Remote directories use the existing TRAMP process launcher and path
+rules.  TRAMP may prompt for authentication, and dependency checks and
+file reads may block on remote access; non-displaying does not mean
+all setup is asynchronous."
+  (unless (or (null name)
+              (and (stringp name) (not (string-empty-p name))))
+    (error "Pilish: session name must be nil or a nonempty string: %S"
+           name))
+  (unless (and (proper-list-p args) (seq-every-p #'stringp args))
+    (error "Pilish: arguments must be a list of strings: %S" args))
+  (pilish--check-environment environment)
+  (let* ((session-file (and session-file
+                            (pilish--route-preserving-expand-file-name
+                             session-file)))
+         (recorded-dir (and session-file
+                            (pilish--normalize-directory
+                             (pilish--session-file-cwd-or-error
+                              session-file))))
+         (dir (cond (directory (pilish--normalize-directory directory))
+                    (recorded-dir)
+                    (t (error "Pilish: a session needs a directory")))))
+    (unless (file-directory-p dir)
+      (error "Pilish: not a directory: %s" dir))
+    (when (and recorded-dir (not (equal recorded-dir dir)))
+      (error "Pilish: session file %s belongs to %s, not %s"
+             session-file recorded-dir dir))
+    (when (or (pilish--find-session dir name)
+              (get-buffer (pilish--buffer-name :chat dir name))
+              (get-buffer (pilish--buffer-name :input dir name)))
+      (error "Pilish: session already exists: %s"
+             (pilish--buffer-name :chat dir name)))
     (condition-case err
-        ;; Background sessions never prompt, not even to install a grammar:
-        ;; a frameless daemon would wait forever.
-        (let ((treesit-auto-install-grammar 'never))
-          (pilish--setup-session
-           directory name
-           (if session-file (append (list "--session" session-file) args) args)
-           environment on-ready t session-file))
-      (error
+        ;; Mode setup runs when the buffers are created, and nobody is
+        ;; there to answer Emacs's own grammar installation prompt.
+        (let* ((treesit-auto-install-grammar 'never)
+               (detached (pilish-runtime-configured-p))
+               (chat-buf (pilish--setup-session
+                          dir name
+                          :args args :environment environment
+                          :session-file session-file
+                          :background t :on-ready on-ready)))
+          (when (and session-file (not detached))
+            (pilish--resume-selected-session
+             (buffer-local-value 'pilish--process chat-buf)
+             chat-buf session-file))
+          chat-buf)
+      ((error quit)
        (let ((pilish-quit-without-confirmation t))
-         (dolist (kind '(:chat :input))
-           (when-let* ((buffer (get-buffer (pilish--buffer-name kind directory name))))
+         (dolist (buffer (list (or (pilish--find-session dir name)
+                                   (get-buffer
+                                    (pilish--buffer-name :chat dir name)))
+                               (get-buffer
+                                (pilish--buffer-name :input dir name))))
+           (when (buffer-live-p buffer)
              (kill-buffer buffer))))
        (signal (car err) (cdr err))))))
 
-(defun pilish-session-chat-buffer (&optional buffer)
-  "Return the session chat linked to BUFFER, or nil outside a session.
-BUFFER defaults to the current buffer and may be a chat or input buffer."
-  (with-current-buffer (or buffer (current-buffer))
-    (pilish--get-chat-buffer)))
-
-(defun pilish-session-process (chat-buffer)
-  "Return CHAT-BUFFER's transport process, or nil.
-For detached views it is a network connection, not the actual Pi process.
-Use `pilish-session-process-identity' for actual Pi PID/start/boot identity."
-  (when (buffer-live-p chat-buffer)
-    (buffer-local-value 'pilish--process chat-buffer)))
-
-(defun pilish-session-input-context (chat-buffer)
-  "Copy CHAT-BUFFER's owning input context after its successful live boundary.
-Return nil for unshared or unavailable views.  Capture this before asynchronous
-work and pass it to `pilish-submit-prompt'; never infer it from the moving leaf."
-  (when (buffer-live-p chat-buffer)
-    (let ((proc (buffer-local-value 'pilish--process chat-buffer)))
-      (when (and (processp proc) (process-get proc 'pilish-detached)
-                 (pilish--shared-input-ready-p proc))
-        (pilish--capture-input-context proc)))))
-
-(defun pilish-session-input-buffer (chat-buffer)
-  "Return the input buffer owned by CHAT-BUFFER, or nil."
-  (when (buffer-live-p chat-buffer)
-    (buffer-local-value 'pilish--input-buffer chat-buffer)))
-
-(defun pilish-session-directory (chat-buffer)
-  "Return the session directory of CHAT-BUFFER, or nil."
-  (when (buffer-live-p chat-buffer)
-    (pilish--chat-session-directory chat-buffer)))
-
-(defun pilish-session-name (chat-buffer)
-  "Return the named-session suffix of CHAT-BUFFER; nil for the default session."
-  (when (buffer-live-p chat-buffer)
-    (buffer-local-value 'pilish--canonical-session-name chat-buffer)))
-
-(defun pilish-session-title (chat-buffer)
-  "Return the name Pi records for CHAT-BUFFER's conversation, or nil."
-  (when (buffer-live-p chat-buffer)
-    (let ((title (buffer-local-value 'pilish--session-name chat-buffer)))
-      (and (stringp title) (not (string-empty-p title)) title))))
-
-(defun pilish-session-file (chat-buffer)
-  "Return the Pi session file CHAT-BUFFER has open, or nil."
-  (when (buffer-live-p chat-buffer)
-    (plist-get (buffer-local-value 'pilish--state chat-buffer) :session-file)))
-
-(defun pilish-session-model (chat-buffer)
-  "Return CHAT-BUFFER's model as Pi's plist (with :id and :provider), or nil."
-  (when (buffer-live-p chat-buffer)
-    (let ((model (plist-get (buffer-local-value 'pilish--state chat-buffer) :model)))
-      (and (listp model) model))))
-
-(defun pilish-session-context-usage (chat-buffer)
-  "Return CHAT-BUFFER's last reported context use (with :percent), or nil."
-  (when (buffer-live-p chat-buffer)
-    (plist-get (buffer-local-value 'pilish--cached-stats chat-buffer) :contextUsage)))
-
-(defun pilish-session-queued-prompts (chat-buffer)
-  "Return the queued prompt texts of CHAT-BUFFER, in delivery order.
-That is Pi's latest reported queue (follow-ups, then steering) and
-Pilish's own follow-ups awaiting submission, as the header shows them."
-  (when (buffer-live-p chat-buffer)
-    (with-current-buffer chat-buffer
-      (let ((snapshot (pilish--process-queue-snapshot pilish--process)))
-        (append (plist-get snapshot :followUp)
-                (pilish--followups-in-fifo-order)
-                (plist-get snapshot :steering)
-                nil)))))
-
-(defun pilish-session-extension-status (chat-buffer key)
-  "Return the text of extension status KEY in CHAT-BUFFER, or nil.
-`pilish-extension-status-functions' report changes."
-  (when (buffer-live-p chat-buffer)
-    (cdr (assoc key (buffer-local-value 'pilish--extension-status chat-buffer)))))
-
-(defun pilish-session-busy-p (chat-buffer)
-  "Return non-nil when CHAT-BUFFER's session works or has work queued.
-That covers sending, streaming, compacting, running tools, session
-changes in flight and queued prompts; not dialogs awaiting the user (see
-`pilish-session-pending-dialogs')."
-  (when (buffer-live-p chat-buffer)
-    (or (pilish--session-busy-p chat-buffer)
-        (not (member (buffer-local-value 'pilish--activity-phase chat-buffer)
-                     '(nil "idle")))
-        (pilish-session-queued-prompts chat-buffer))))
-
-(defun pilish-close-session (chat-buffer &optional callback)
-  "Close CHAT-BUFFER's agent everywhere without confirmation.
-CALLBACK receives nil after authoritative termination and view removal, or
-an error string on failure/uncertainty.  Failed closes retain local input.
-Workers use their owning task's cancellation, never root-stop fallback."
-  (pilish--runtime-close-session chat-buffer callback))
-
-(defun pilish-disconnect-session (chat-buffer)
-  "Dispose CHAT-BUFFER's local view without stopping a detached agent.
-For frontend/orchestration teardown only; normal user Close stops the agent.
-Unshared Pi retains its native buffer/process lifetime."
-  (pilish--dispose-session-view chat-buffer))
-
-(defun pilish--show-session-buffers (chat-buf input-buf)
-  "Show CHAT-BUF and INPUT-BUF, focusing input when both are visible.
-When `pilish-input-window-display' is `hidden', a freshly
-displayed session starts with only the chat window visible."
-  (if (and (get-buffer-window-list chat-buf nil)
-           (get-buffer-window-list input-buf nil))
-      (pilish--focus-input-window chat-buf input-buf)
-    (pilish--display-buffers
-     chat-buf input-buf
-     (eq pilish-input-window-display 'hidden))))
+(defun pilish-show-session (chat-buffer)
+  "Show the session whose chat buffer is CHAT-BUFFER, as \\[pilish] does.
+This displays a session started with `pilish-start-session' without
+changing `default-directory'.  It neither starts nor restarts Pi; use
+`pilish-reload' for a session whose process has exited.  Return
+CHAT-BUFFER."
+  (unless (and (buffer-live-p chat-buffer)
+               (with-current-buffer chat-buffer
+                 (derived-mode-p 'pilish-chat-mode))
+               (buffer-live-p (buffer-local-value 'pilish--input-buffer
+                                                  chat-buffer)))
+    (error "Pilish: not a session chat buffer: %S" chat-buffer))
+  (pilish--show-session-buffers
+   chat-buffer (buffer-local-value 'pilish--input-buffer chat-buffer))
+  chat-buffer)
 
 (defun pilish--dired-regular-file-at-point ()
   "Return Dired's regular file at point, or nil."
@@ -539,8 +618,8 @@ visited local regular readable .jsonl file when there is one."
              (initial-open
               ;; Detached startup is asynchronous: reserve/open exactly the
               ;; selected file, never start a fresh conversation to resume later.
-              (pilish--setup-session dir nil (list "--session" session-file)
-                                     nil nil nil session-file))
+              (pilish--setup-session
+               dir nil :session-file session-file))
              (existing existing)
              (t (pilish--setup-session dir))))
            (input-buf (buffer-local-value 'pilish--input-buffer chat-buf))

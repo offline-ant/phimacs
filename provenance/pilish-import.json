@@ -4,7 +4,7 @@
   "license": "GPL-3.0-or-later",
   "upstream": {
     "repository": "https://github.com/dnouri/pilish.git",
-    "incorporatedRevision": "5a83d26a44fc87cf54b52b2f9d80806964dd5634"
+    "incorporatedRevision": "69179108707fd056885707314404efc6d0cf8d2e"
   },
   "selection": {
     "input": "committed tracked tree",

@@ -18,9 +18,8 @@
                 ((symbol-function 'pilish--resume-selected-session)
                  (lambda (&rest _) (ert-fail "Cannot resume a nil asynchronous process"))))
         (should (eq (pilish-open-session-file "/tmp/selected-saved.jsonl") chat)))
-      (should (equal (nth 2 setup-arguments)
-                     '("--session" "/tmp/selected-saved.jsonl")))
-      (should (equal (nth 6 setup-arguments) "/tmp/selected-saved.jsonl")))))
+      (should (equal (plist-get (cddr setup-arguments) :session-file)
+                     "/tmp/selected-saved.jsonl")))))
 
 (ert-deftest pilish-boundary-test-open-unready-detached-never-spawns ()
   "An existing detached view must be live before replacement is attempted."

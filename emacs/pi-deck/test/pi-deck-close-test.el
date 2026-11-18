@@ -303,7 +303,7 @@ closing space is held until Pilish settles every joined Close once."
                 (with-current-buffer chat
                   (setq pi-deck-test--runtime
                         (plist-put pi-deck-test--runtime :state "disconnected")))
-                (run-hook-with-args 'pilish-session-identity-functions chat)
+                (run-hook-with-args 'pilish-session-desktop-state-functions chat)
                 (should (pi-deck-agent chat))
                 (should (get-buffer-window input))
                 (should (equal (plist-get (plist-get (car (plist-get (pi-deck-state) :agents))

@@ -127,13 +127,21 @@ Suspend local work bound to CONTEXT without losing the authoritative identity."
             (pilish--cancel-tool-times-state)
             (dolist (request (pilish--extension-dialog-pending proc))
               (pilish--extension-dialog-set proc (plist-get request :id) :pilish-stale t))
-            ;; Adopt authoritative runtime identity even when history is unavailable.
+            ;; Runtime bookkeeping, buffer retargeting and reset may all notify.
+            ;; None has the complete identity until this snapshot sets chat state.
+            (setq pilish--session-identity-state-pending t)
             (when (fboundp 'pilish--runtime-note-snapshot)
               (pilish--runtime-note-snapshot proc snapshot))
             (pilish--draft-adopt-context snapshot)
-            (if (pilish--shared-session-moved-p snapshot)
-                (pilish--shared-adopt-session proc snapshot)
-              (pilish--shared-rebuild snapshot))
+            (let* ((session (plist-get snapshot :session))
+                   (dir (pilish--shared-moved-directory session))
+                   (old-file (plist-get pilish--state :session-file)))
+              (if (or dir (and old-file
+                               (not (equal (pilish--canonical-session-path old-file)
+                                           (pilish--canonical-session-path
+                                            (pilish--shared-session-file session))))))
+                  (pilish--shared-adopt-session proc snapshot dir)
+                (pilish--shared-rebuild snapshot)))
             (when (or (plist-get snapshot :historyError)
                       (not (vectorp (plist-get snapshot :messages)))
                       (not (vectorp (plist-get snapshot :entries))))
@@ -158,15 +166,13 @@ Suspend local work bound to CONTEXT without losing the authoritative identity."
          (pilish--shared-snapshot-application-failed
           proc (error-message-string err) old-context))))))
 
-(defun pilish--shared-session-moved-p (snapshot)
-  "Return non-nil when SNAPSHOT names another file or session directory."
-  (let* ((session (plist-get snapshot :session))
-         (file (plist-get pilish--state :session-file))
-         (new-file (pilish--shared-session-file session))
-         (dir (pilish--shared-session-directory (plist-get session :cwd))))
-    (or (and file (not (equal file new-file)))
-        (and dir (not (equal dir (file-name-as-directory
-                                  (pilish--chat-session-directory))))))))
+(defun pilish--shared-moved-directory (session)
+  "Return SESSION's new directory if this view needs retargeting."
+  (when-let* ((dir (pilish--shared-session-directory (plist-get session :cwd))))
+    (unless (equal (pilish--canonical-session-path dir)
+                   (pilish--canonical-session-path
+                    (file-name-as-directory (pilish--chat-session-directory))))
+      dir)))
 
 (defun pilish--shared-note-ui-replay (proc event)
   "Keep the extension UI that PROC's replayed EVENT names."
@@ -278,6 +284,9 @@ A failing callback reports its error; it cannot fail the live boundary."
   (pilish--clear-local-user-message-region)
   (when (eq pilish--status 'idle) (pilish--set-activity-phase "idle"))
   (pilish--shared-apply-session-state snapshot)
+  ;; Even unavailable history does not invalidate the snapshot's identity.
+  (setq pilish--session-identity-state-pending nil)
+  (pilish--note-session-identity)
   (pilish--display-session-history (plist-get snapshot :messages) (current-buffer))
   (when-let* ((error (or (plist-get snapshot :historyError)
                         (unless (plist-member snapshot :messages)
@@ -285,19 +294,16 @@ A failing callback reports its error; it cannot fail the live boundary."
     (pilish--add-chat-notice (format "History unavailable: %s" error)
                              'pilish-error-notice))
   (when pilish--process (pilish--dialog-reanchor (current-buffer)))
-  (pilish--note-session-identity)
   (force-mode-line-update t))
 
-(defun pilish--shared-adopt-session (proc snapshot)
-  "Adopt PROC's authoritative SNAPSHOT identity in the existing view.
-Context-bound local work was quarantined before entry; never preserve an old
-prompt request or automatic follow-up across this reset."
-  (let ((dir (pilish--shared-session-directory
-              (plist-get (plist-get snapshot :session) :cwd)))
-        (followups pilish--followup-queue)
+(defun pilish--shared-adopt-session (proc snapshot dir)
+  "Adopt PROC's authoritative SNAPSHOT in the existing view.
+Retarget to DIR if non-nil.  Context-bound local work was quarantined before
+entry; never preserve an old prompt request or automatic follow-up across
+this reset."
+  (let ((followups pilish--followup-queue)
         (prompt-wait pilish--prompt-wait))
-    (when (and dir (not (equal dir (file-name-as-directory
-                                    (pilish--chat-session-directory)))))
+    (when dir
       (pilish--retarget-session-identity dir (pilish--shared-free-session-name dir)))
     (pilish--reset-session-state)
     ;; The snapshot's replay sets the runtime's statuses and widgets again.

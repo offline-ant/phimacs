@@ -18,39 +18,24 @@
               (should (equal (plist-get command :streamingBehavior) "followUp")))))
       (when (process-live-p process) (delete-process process)))))
 
-(ert-deftest pilish-test-named-session-private-launch-and-no-focus ()
+(ert-deftest pilish-test-named-sessions-ready-and-close-independently ()
+  "Each named session signals readiness, and closing one leaves its peer live."
   (let ((dir (pilish-test--make-temp-directory "pi-named-api-"))
         (pilish-executable (pilish-test-fake-pi-executable))
         (pilish-extra-args (pilish-test-fake-pi-extra-args "prompt-lifecycle"))
-        (window (selected-window))
-        (before (window-buffer))
         chat1 chat2 ready1 ready2)
     (unwind-protect
         (cl-letf (((symbol-function 'pilish--check-dependencies) #'ignore))
-          (setq chat1 (pilish-start-session dir "one" :environment '(("PI_NATIVE_TEST" . "one"))
-                                            :on-ready (lambda (r) (setq ready1 r)))
-                chat2 (pilish-start-session dir "two" :environment '(("PI_NATIVE_TEST" . "two"))
-                                            :on-ready (lambda (r) (setq ready2 r))))
-          (should (eq (selected-window) window))
-          (should (eq (window-buffer) before))
+          (setq chat1 (pilish-start-session dir "one" :on-ready
+                                            (lambda (r) (setq ready1 r)))
+                chat2 (pilish-start-session dir "two" :on-ready
+                                            (lambda (r) (setq ready2 r))))
           (should (pilish-test-wait-until (lambda () (and ready1 ready2)) 5))
           (should (eq (plist-get ready1 :success) t))
           (should (eq (plist-get ready2 :success) t))
           (should-not (eq (pilish-session-process chat1) (pilish-session-process chat2)))
-          (should (equal (buffer-local-value 'pilish--launch-environment chat1)
-                         '(("PI_NATIVE_TEST" . "one"))))
-          (should-error (pilish-start-session dir "one"))
-          (should-error (pilish-start-session dir ""))
-          (should (pilish-session-exists-p dir "one"))
-          (should-not (pilish-session-exists-p dir nil))
-          (let ((default (pilish-start-session dir nil)))
-            (should (equal (buffer-name default) (pilish--buffer-name :chat dir)))
-            (should (eq (pilish--find-session dir) default))
-            (should (pilish-session-exists-p dir nil))
-            (should-not (pilish-session-name default))
-            (should-error (pilish-start-session dir nil))
-            (pilish-close-session default))
           (pilish-close-session chat1)
+          (should-not (buffer-live-p chat1))
           (should (process-live-p (pilish-session-process chat2))))
       (pilish-close-session chat1)
       (pilish-close-session chat2)
@@ -67,76 +52,54 @@
           (should (eq seen 'never)))
       (delete-directory dir t))))
 
-(ert-deftest pilish-test-start-session-resumes-session-file ()
-  "`:session-file' resumes that file and renders its history."
-  (let ((dir (pilish-test--make-temp-directory "pi-session-file-"))
-        calls)
+(ert-deftest pilish-test-managed-start-opens-exact-session-file ()
+  "Managed starts use the current saved file and retain caller options."
+  (let* ((dir (pilish-test--make-temp-directory "pi-managed-start-"))
+         (file (expand-file-name "saved.jsonl" dir))
+         (later (expand-file-name "later.jsonl" dir))
+         (hook-value "initial")
+         (pilish-session-environment-functions
+          (list (lambda (_chat _dir) (list (cons "FROM_HOOK" hook-value)))))
+         launches chat ready)
     (unwind-protect
-        (cl-letf (((symbol-function 'pilish--setup-session)
-                   (lambda (&rest call) (push call calls) nil)))
-          (pilish-start-session dir "resumed" :session-file "/tmp/s.jsonl"
-                                :args '("--verbose"))
-          (pilish-start-session dir "fresh" :args '("--session" "/tmp/not-a-resume"))
-          (pcase-let ((`(,_ ,_ ,args ,_ ,_ ,_ ,session-file) (cadr calls)))
-            (should (equal args '("--session" "/tmp/s.jsonl" "--verbose")))
-            (should (equal session-file "/tmp/s.jsonl")))
-          ;; Only the keyword means resume; ARGS are passed through.
-          (should-not (nth 6 (car calls))))
-      (delete-directory dir t))))
-
-(ert-deftest pilish-test-session-environment-errors-are-warnings ()
-  "A failing environment function is reported; the others still apply."
-  (let ((pilish-session-environment-functions
-         (list (lambda (_chat _dir) (error "Broken hook"))
-               (lambda (_chat _dir) '(("OK" . "1")))))
-        warnings)
-    (cl-letf (((symbol-function 'display-warning)
-               (lambda (_type message &rest _) (push message warnings))))
-      (should (equal (pilish--session-environment nil "/tmp/") '(("OK" . "1"))))
-      (should (string-match-p "Broken hook" (car warnings))))))
-
-(ert-deftest pilish-test-session-accessors ()
-  "Public accessors read a session's identity, state and activity."
-  (let ((process (make-pipe-process :name "pilish-accessor-test" :noquery t))
-        (chat (generate-new-buffer "*pilish-accessors*"))
-        (dir (file-name-as-directory (pilish-test--make-temp-directory "pi-accessors-"))))
-    (unwind-protect
-        (with-current-buffer chat
-          (pilish-chat-mode)
-          (pilish--set-chat-session-identity dir "two")
-          (pilish--set-process process)
-          (setq pilish--state '(:session-file "/tmp/s.jsonl" :model (:id "m" :provider "p"))
-                pilish--session-name "Refactor"
-                pilish--cached-stats '(:contextUsage (:percent 41)))
-          (should (equal (pilish-session-directory chat) dir))
-          (should (equal (pilish-session-name chat) "two"))
-          (should (equal (pilish-session-title chat) "Refactor"))
-          (should (equal (pilish-session-file chat) "/tmp/s.jsonl"))
-          (should (equal (plist-get (pilish-session-model chat) :id) "m"))
-          (should (equal (plist-get (pilish-session-context-usage chat) :percent) 41))
-          (should-not (pilish-session-busy-p chat))
-          ;; Pi's own queue (from `queue_update') counts as queued work.
-          (process-put process 'pilish-queue-snapshot
-                       '(:type "queue_update" :steering ["steer"] :followUp ["later"]))
-          (should (equal (pilish-session-queued-prompts chat) '("later" "steer")))
-          (should (pilish-session-busy-p chat))
-          (process-put process 'pilish-queue-snapshot nil)
-          (setq pilish--status 'streaming)
-          (should (pilish-session-busy-p chat))
-          (setq pilish--status 'idle pilish--activity-phase "running")
-          (should (pilish-session-busy-p chat)))
-      (delete-process process)
-      (kill-buffer chat)
-      (delete-directory dir t))))
-
-(ert-deftest pilish-test-failed-start-removes-only-new-buffers ()
-  (let ((dir (pilish-test--make-temp-directory "pi-failed-start-")))
-    (unwind-protect
-        (cl-letf (((symbol-function 'pilish--start-process)
-                   (lambda (&rest _) (error "Cannot launch"))))
-          (should-error (pilish-start-session dir "failed"))
-          (should-not (get-buffer (pilish--buffer-name :chat dir "failed")))
-          (should-not (get-buffer (pilish--buffer-name :input dir "failed"))))
+        (cl-letf (((symbol-function 'pilish-runtime-configured-p)
+                   (lambda () t))
+                  ((symbol-function 'pilish--check-dependencies) #'ignore)
+                  ((symbol-function 'pilish--runtime-call)
+                   (lambda (command directory environment callback)
+                     (push (list command directory environment) launches)
+                     (funcall callback '(:protocol 2 :state "committed"
+                                         :outcome "started") nil)
+                     nil))
+                  ((symbol-function 'pilish--runtime-connect-committed)
+                   (lambda (_chat _receipt _dir _env callback)
+                     (funcall callback nil)))
+                  ((symbol-function 'pilish--resume-selected-session)
+                   (lambda (&rest _) (ert-fail "Requested a second switch"))))
+          (pilish-test--write-session-file file "Saved prompt" dir)
+          (setq chat (pilish-start-session
+                      nil "resumed" :session-file file :args '("--verbose")
+                      :environment '(("PILISH_TEST" . "owner"))
+                      :on-ready (lambda (response) (setq ready response))))
+          (should (eq (plist-get ready :success) t))
+          ;; The saved file can change while the runtime is alive.  Resume
+          ;; starts the current one, not an argv cached during initial setup.
+          (with-current-buffer chat
+            (setq pilish--state (list :session-file later)
+                  pilish--runtime '(:state "stopped")))
+          (setq hook-value "resumed" ready :pending)
+          (pilish-resume-stopped-session chat (lambda (error) (setq ready error)))
+          (should-not ready)
+          (should (= 2 (length launches)))
+          (cl-loop for (command cwd env) in (reverse launches)
+                   for target in (list file later)
+                   for value in '("initial" "resumed") do
+                   (should (equal cwd dir))
+                   (should (= 1 (cl-count "--session" command :test #'equal)))
+                   (should (equal (last command 3) (list "--session" target "--verbose")))
+                   (should (equal env (list '("PILISH_TEST" . "owner")
+                                            (cons "FROM_HOOK" value))))))
+      (when (buffer-live-p chat) (kill-buffer chat))
       (delete-directory dir t))))
 
 (ert-deftest pilish-test-session-environment-hook-precedes-spawn-and-survives-reload ()
@@ -181,21 +144,31 @@
                                 (not (pilish--session-transition-active-p)))) 5))
           (should (= (length launches) 2))
           (should (equal (car launches) (cadr launches)))
-          (should (= hook-count 1)))
+          (should (= hook-count 2)))
       (pilish-close-session chat)
       (delete-directory dir t))))
 
 (ert-deftest pilish-test-session-api-rejects-unrelated-buffer-name-collision ()
-  (let* ((dir (pilish-test--make-temp-directory "pi-buffer-collision-"))
-         (buffer (get-buffer-create (pilish--buffer-name :chat dir "taken"))))
+  "Neither chat nor input buffer names may be taken from other buffers."
+  (let ((dir (pilish-test--make-temp-directory "pi-buffer-collision-")))
     (unwind-protect
-        (progn
-          (with-current-buffer buffer (insert "unrelated content"))
-          (should-error (pilish-start-session dir "taken"))
-          (should (buffer-live-p buffer))
-          (should (equal (with-current-buffer buffer (buffer-string)) "unrelated content"))
-          (should-not (get-buffer (pilish--buffer-name :input dir "taken"))))
-      (kill-buffer buffer)
+        (dolist (type '(:chat :input))
+          (let ((buffer (generate-new-buffer (pilish--buffer-name type dir "taken")))
+                (other (if (eq type :chat) :input :chat))
+                started)
+            (unwind-protect
+                (cl-letf (((symbol-function 'pilish--setup-session)
+                           (lambda (&rest _)
+                             (setq started t)
+                             (error "Unexpected startup"))))
+                  (with-current-buffer buffer (insert "unrelated content"))
+                  (should-error (pilish-start-session dir "taken"))
+                  (should-not started)
+                  (should (buffer-live-p buffer))
+                  (should (equal (with-current-buffer buffer (buffer-string))
+                                 "unrelated content"))
+                  (should-not (get-buffer (pilish--buffer-name other dir "taken"))))
+              (when (buffer-live-p buffer) (kill-buffer buffer)))))
       (delete-directory dir t))))
 
 (ert-deftest pilish-test-closing-a-session-runs-kill-hooks-in-its-own-buffers ()
@@ -229,30 +202,6 @@ the rest of its hook in whatever buffer became current."
         (remove-hook 'kill-buffer-hook observer)
         (dolist (buffer (list chat input bystander))
           (when (buffer-live-p buffer) (kill-buffer buffer)))))))
-
-(ert-deftest pilish-test-extension-status-accessor-and-hook ()
-  "Integrations read statuses and hear each real change, without `pilish--' state."
-  (let ((chat (generate-new-buffer "*pilish-status*"))
-        changes)
-    (unwind-protect
-        (with-current-buffer chat
-          (pilish-chat-mode)
-          (let ((pilish-extension-status-functions
-                 (list (lambda (&rest args) (push args changes))
-                       (lambda (&rest _) (error "Broken observer")))))
-            (cl-letf (((symbol-function 'display-warning) #'ignore))
-              (should-not (pilish-session-extension-status chat "key"))
-              (pilish--extension-ui-set-status '(:statusKey "key" :statusText "\e[33mon\e[0m"))
-              (should (equal (pilish-session-extension-status chat "key") "on"))
-              ;; An unchanged status is no change.
-              (pilish--extension-ui-set-status '(:statusKey "key" :statusText "on"))
-              (pilish--extension-ui-set-status '(:statusKey "key"))
-              (should-not (pilish-session-extension-status chat "key"))
-              (pilish--extension-ui-set-status '(:statusKey "other"))))
-          (should (equal (reverse changes)
-                         (list (list chat "key" "on") (list chat "key" nil)))))
-      (kill-buffer chat))
-    (should-not (pilish-session-extension-status chat "key"))))
 
 (provide 'pilish-session-api-test)
 ;;; pilish-session-api-test.el ends here

@@ -217,7 +217,7 @@
     (pi-deck-create-space dir "space")
     (let* ((chat (pi-deck-test--session dir "root"))
            (pi-deck-save-delay 1000)
-           (pilish-session-identity-functions (list #'pi-deck--on-session-identity)))
+           (pilish-session-identity-functions (list #'pi-deck--on-session-change)))
       (pi-deck--save-now)
       (should-not pi-deck--save-timer)
       (with-current-buffer chat
@@ -232,7 +232,7 @@
                      (expand-file-name "other.jsonl" dir))))))
 
 (ert-deftest pi-deck-test-mode-listens-to-session-identity ()
-  (should (member '(pilish-session-identity-functions . pi-deck--on-session-identity)
+  (should (member '(pilish-session-identity-functions . pi-deck--on-session-change)
                   pi-deck--hooks)))
 
 (ert-deftest pi-deck-test-mode-listens-to-extension-status ()

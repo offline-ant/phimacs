@@ -136,12 +136,6 @@ unreadable metadata does not."
           :state (if (equal (plist-get record :state) "stopped") "stopped"
                    (or (plist-get record :status) "disconnected")))))
 
-(defun pilish--runtime-environment (environment)
-  "Return launcher environment with explicit per-session ENVIRONMENT."
-  (let ((process-environment (copy-sequence process-environment)))
-    (dolist (entry (reverse environment)) (setenv (car entry) (cdr entry)))
-    process-environment))
-
 (defun pilish--runtime-call (arguments directory environment callback)
   "Run compiled pimux ARGUMENTS in DIRECTORY with ENVIRONMENT.
 CALLBACK receives (value error).  Its bounded receipt is never treated as an
@@ -152,7 +146,7 @@ protocol owns cleanup; a committed runtime is left available for attachment."
                (file-executable-p pilish-runtime-pimux-executable))
     (error "Configure an absolute compiled pimux executable first"))
   (let* ((default-directory directory)
-         (process-environment (pilish--runtime-environment environment))
+         (process-environment (pilish--process-environment environment))
          (output "") (stderr (generate-new-buffer " *pilish-runtime-diagnostic*"))
          (completed nil) timer process
          (finish (lambda (value error)
@@ -478,8 +472,9 @@ CALLBACK settles only after connection readiness or discovery failure."
             (logior 8 (logand 3 (string-to-number (substring hex 16 17) 16)))
             (substring hex 17 20) (substring hex 20 32))))
 
-(defun pilish--runtime-start-view (chat directory args environment callback)
-  "Explicitly launch a runtime for CHAT in DIRECTORY with ARGS/ENVIRONMENT.
+(defun pilish--runtime-start-view (chat directory session-file callback)
+  "Launch CHAT's runtime in DIRECTORY, opening SESSION-FILE when non-nil.
+Each launch uses CHAT's own arguments and environment.
 CALLBACK takes nil/error once.  No initial prompt or inferred recovery is sent.
 The launch's chosen operation ID is retained from the start, so discovery can
 be matched to this view before the commitment receipt names its mux ID."
@@ -491,10 +486,13 @@ be matched to this view before the commitment receipt names its mux ID."
     (setq pilish--runtime (list :protocol 2 :state "starting"
                                :operation-id (pilish--runtime-new-operation-id)
                                :session-file (plist-get pilish--state :session-file)))
-    (let ((command (append (list "start" "--json"
+    (let ((environment (pilish--session-environment chat directory))
+          (command (append (list "start" "--json"
                                  "--operation-id" (plist-get pilish--runtime :operation-id)
                                  "--" pilish-runtime-pi-executable "--mode" "rpc")
-                           pilish-extra-args (pilish--project-trust-args) args)))
+                           pilish-extra-args (pilish--project-trust-args)
+                           (when session-file (list "--session" session-file))
+                           (plist-get pilish--launch-options :args))))
       (setq pilish--runtime-launcher
             (pilish--runtime-call
              command directory environment

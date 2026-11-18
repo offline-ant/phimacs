@@ -80,7 +80,7 @@
                 ((symbol-function 'pilish--start-process)
                  (lambda (&rest _) (ert-fail "Reload spawned missing runtime"))))
         (pilish-reload (lambda (result) (push result outcomes))))
-      (should (equal outcomes '("Runtime missing; Resume explicitly"))))))
+      (should (equal outcomes '((failed . "Runtime missing; Resume explicitly")))))))
 
 (ert-deftest pilish-menu-detached-test-managed-stopped-view-without-mux-does-not-resume ()
   "A managed stopped view without a runtime ID still needs explicit Resume."
@@ -95,24 +95,33 @@
                 ((symbol-function 'pilish--start-process)
                  (lambda (&rest _) (ert-fail "Reload silently resumed a stopped view"))))
         (pilish-reload (lambda (result) (push result outcomes))))
-      (should (equal outcomes '("No runtime identity; Resume explicitly"))))))
+      (should (equal outcomes '((failed . "No runtime identity; Resume explicitly")))))))
 
 (ert-deftest pilish-menu-detached-test-worker-refusal-retains-extension-reload ()
   "Worker refusal never replaces its actual Pi or transport."
   (pilish-menu-detached-test--with-view
     (let ((pilish-restart-refusal-functions (list (lambda (_) "Parent tracks actual Pi")))
           (pilish--commands '((:name "reload")))
-          sent outcomes)
+          sent respond outcomes)
       (cl-letf (((symbol-function 'pilish-submit-prompt)
                  (lambda (buffer text callback)
-                   (setq sent (list buffer text))
-                   (funcall callback '(:success t))))
-                ((symbol-function 'pilish--refresh-commands) #'ignore)
+                   (setq sent (list buffer text) respond callback)))
+                ((symbol-function 'pilish--fetch-commands)
+                 (lambda (&rest _) (error "Command refresh unavailable")))
                 ((symbol-function 'pilish-reconnect-runtime)
                  (lambda (&rest _) (ert-fail "Worker refusal was ignored"))))
-        (pilish-reload (lambda (result) (push result outcomes))))
-      (should (equal sent (list chat "/reload")))
-      (should (equal outcomes '(nil))))))
+        (pilish-reload (lambda (result) (push result outcomes)))
+        (should (equal sent (list chat "/reload")))
+        (should-not outcomes)
+        ;; Command discovery failure does not undo an accepted /reload.
+        (funcall respond '(:success t))
+        (should (equal outcomes '(nil)))
+        (pilish-reload (lambda (result) (push result outcomes)))
+        (pilish--begin-session-transition proc)
+        (funcall respond '(:success t))
+        (should (equal outcomes
+                       '((superseded . "Reload superseded by another session change")
+                         nil)))))))
 
 (ert-deftest pilish-menu-detached-test-declined-new-conversation-is-inert ()
   "Shared replacement requires confirmation before any mutation or RPC."

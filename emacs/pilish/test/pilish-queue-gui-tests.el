@@ -39,13 +39,13 @@
     (execute-kbd-macro (kbd "C-c C-s"))
     (should (pilish-test-wait-until
              (lambda ()
-               (with-current-buffer chat (pilish--queued-steering)))
+               (equal (pilish-session-queued-prompts chat) '("steer later")))
              pilish-test-rpc-timeout pilish-test-poll-interval process))
     (insert "follow later")
     (execute-kbd-macro (kbd "M-RET"))
     (insert "my draft")
-    (with-current-buffer chat
-      (should (equal (pilish--queued-followups) '("follow later"))))))
+    (should (equal (pilish-session-queued-prompts chat)
+                   '("follow later" "steer later")))))
 
 (defun pilish-queue-gui--click (window command)
   "Press and release the mouse on the control running COMMAND in WINDOW."
@@ -80,10 +80,7 @@
                                       'pilish-clear-queued-messages))
             ('stop (execute-kbd-macro (kbd "C-c C-k"))))
           (should (pilish-test-wait-until
-                   (lambda ()
-                     (with-current-buffer chat
-                       (not (or (pilish--queued-steering)
-                                (pilish--queued-followups)))))
+                   (lambda () (not (pilish-session-queued-prompts chat)))
                    pilish-test-rpc-timeout pilish-test-poll-interval process))
           (should (pilish-test-wait-until
                    (lambda ()

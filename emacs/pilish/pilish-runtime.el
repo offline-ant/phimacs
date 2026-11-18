@@ -14,7 +14,6 @@
 (require 'pilish-runtime-task)
 (require 'pilish-grammars)
 
-(declare-function pilish--session-environment "pilish" (chat-buf dir))
 (declare-function pilish-session-file "pilish" (chat-buffer))
 (declare-function pilish-session-name "pilish" (chat-buffer))
 (declare-function pilish-session-directory "pilish" (chat-buffer))
@@ -102,8 +101,7 @@ Saved automatic input becomes suspended recovery, never a restored send queue."
   "List compatible and unsupported discovery identities without starting Pi.
 Unsupported identities remain visible; they are never duplicate-spawn fallbacks."
   (unless (pilish-runtime-configured-p) (user-error "Configure detached runtime support first"))
-  (let ((default-directory temporary-file-directory)
-        (process-environment (pilish--runtime-environment nil)))
+  (let ((default-directory temporary-file-directory))
     (with-temp-buffer
       (let ((status (process-file pilish-runtime-pimux-executable nil t nil "list" "--json")))
         (unless (and (integerp status) (zerop status))
@@ -310,8 +308,7 @@ managed claim before opening it."
 A missing, invalid or unreadable receipt is unknown, never stopped proof."
   (when (and (plist-get runtime :mux-id) (pilish-runtime-configured-p))
     (condition-case nil
-        (let ((default-directory temporary-file-directory)
-              (process-environment (pilish--runtime-environment nil)))
+        (let ((default-directory temporary-file-directory))
           (with-temp-buffer
             (when (eq 0 (process-file pilish-runtime-pimux-executable nil t nil
                                       "receipt" "--json" "--id" (plist-get runtime :mux-id)))
@@ -398,10 +395,7 @@ Claims enforce live/uncertain-owner refusal before Pi opens a saved file."
                 (directory (pilish-session-directory buffer)))
             (unless (and (stringp file) (file-name-absolute-p file))
               (error "Stopped conversation requires an exact saved session path"))
-            (setq pilish--launch-args (list "--session" file)
-                  pilish--launch-environment (pilish--session-environment buffer directory))
-            (pilish--runtime-start-view buffer directory pilish--launch-args
-                                        pilish--launch-environment callback)))
+            (pilish--runtime-start-view buffer directory file callback)))
       (error (funcall callback (error-message-string err))))))
 
 (cl-defun pilish-stop-runtime (buffer &optional callback)

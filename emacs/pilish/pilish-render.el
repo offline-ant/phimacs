@@ -1663,22 +1663,13 @@ and a window displays it there.  Return the buffer."
 
 (defun pilish--extension-ui-set-status (event)
   "Handle setStatus method from EVENT."
-  (let* ((key (plist-get event :statusKey))
-         (text (plist-get event :statusText))
-         (old (cdr (assoc key pilish--extension-status))))
+  (let ((key (plist-get event :statusKey))
+        (text (plist-get event :statusText)))
     (pilish--note-extension-ui 'status key)
     (when text
       (setq text (ansi-color-filter-apply
                   (pilish--render-safe-string text))))
-    (if text
-        (setq pilish--extension-status
-              (cons (cons key text)
-                    (assoc-delete-all key pilish--extension-status)))
-      (setq pilish--extension-status
-            (assoc-delete-all key pilish--extension-status)))
-    (force-mode-line-update t)
-    (unless (equal text old)
-      (pilish--run-extension-status-functions key text))))
+    (pilish--set-extension-status key text)))
 
 (defun pilish--extension-ui-set-widget (event proc)
   "Handle setWidget method from EVENT, using PROC for unsupported content.
@@ -7157,61 +7148,62 @@ atomically; layout-only property updates are silent."
               (cond
                ((and label (equal label old-label)))
                ((or label duration)
-                (let* ((start (cond (duration (if label duration (or control-end footer)))
-                                    (t (or control-end footer))))
-                       (end (cond (duration (if (or label control-end) duration-end footer-end))
-                                  (t start)))
-                       (old-end (marker-position end-marker))
-                       (old-size (- end start))
-                       (inhibit-read-only t)
-                       edited-end)
-                  (pilish--with-md-ts-change-hooks-suspended
-                      #'pilish--md-ts-owned-suffix-change-hook-p
-                    (save-excursion
-                      (goto-char start)
-                      (if (and duration label)
-                          ;; One atomic owned edit for every remaining observer.
-                          (combine-change-calls start end
-                            (delete-region start end)
+                (pilish--with-scroll-preservation
+                  (let* ((start (cond (duration (if label duration (or control-end footer)))
+                                      (t (or control-end footer))))
+                         (end (cond (duration (if (or label control-end) duration-end footer-end))
+                                    (t start)))
+                         (old-end (marker-position end-marker))
+                         (old-size (- end start))
+                         (inhibit-read-only t)
+                         edited-end)
+                    (pilish--with-md-ts-change-hooks-suspended
+                        #'pilish--md-ts-owned-suffix-change-hook-p
+                      (save-excursion
+                        (goto-char start)
+                        (if (and duration label)
+                            ;; One atomic owned edit for every remaining observer.
+                            (combine-change-calls start end
+                              (delete-region start end)
+                              (insert (propertize label 'pilish-tool-duration block
+                                                  'face 'pilish-tool-duration
+                                                  'font-lock-face 'pilish-tool-duration)))
+                          (delete-region start end)
+                          (when label
+                            (unless duration
+                              (when control-end
+                                (insert "\n"))
+                              (insert " "))
                             (insert (propertize label 'pilish-tool-duration block
                                                 'face 'pilish-tool-duration
-                                                'font-lock-face 'pilish-tool-duration)))
-                        (delete-region start end)
-                        (when label
-                          (unless duration
-                            (when control-end
-                              (insert "\n"))
-                            (insert " "))
-                          (insert (propertize label 'pilish-tool-duration block
-                                              'face 'pilish-tool-duration
-                                              'font-lock-face 'pilish-tool-duration))
-                          (unless painted (insert "\n"))))
-                      (setq edited-end (point))
-                      (let ((delta (- edited-end start old-size)))
-                        ;; A section painter can be inserting beyond the old body
-                        ;; end; its caller publishes that new bound after painting.
-                        (when (<= end old-end)
-                          (set-marker end-marker (+ old-end delta))
-                          (move-overlay overlay (overlay-start overlay) (marker-position end-marker))))))
-                  (when label
-                    (with-silent-modifications
-                      (let* ((align-end (if (not painted) (1- edited-end) edited-end))
-                             (label-start (- align-end (length label)))
-                             (align (1- label-start))
-                             (align-width (1+ (string-width label))))
-                        (add-text-properties (if duration label-start start) edited-end
-                                             (list 'pilish-tool-output-footer selection 'pilish-tool-section 'output))
-                        (add-text-properties align (1+ align)
-                                             (list 'pilish-tool-footer-align-width align-width 'face 'pilish-tool-duration
-                                                   'display (pilish--tool-footer-align-display align-width)))
-                        (when control-end
-                          (let ((width (+ (string-width (buffer-substring-no-properties footer control-end))
-                                          (string-width label) 2)))
-                            (add-text-properties control-end (1+ control-end)
-                                                 (list 'pilish-tool-footer-break-width width
-                                                       'display (pilish--tool-footer-break-display width))))))))
-                  (unless (or label control-end)
-                    (pilish--detach-tool-output-footer view))))
+                                                'font-lock-face 'pilish-tool-duration))
+                            (unless painted (insert "\n"))))
+                        (setq edited-end (point))
+                        (let ((delta (- edited-end start old-size)))
+                          ;; A section painter can be inserting beyond the old body
+                          ;; end; its caller publishes that new bound after painting.
+                          (when (<= end old-end)
+                            (set-marker end-marker (+ old-end delta))
+                            (move-overlay overlay (overlay-start overlay) (marker-position end-marker))))))
+                    (when label
+                      (with-silent-modifications
+                        (let* ((align-end (if (not painted) (1- edited-end) edited-end))
+                               (label-start (- align-end (length label)))
+                               (align (1- label-start))
+                               (align-width (1+ (string-width label))))
+                          (add-text-properties (if duration label-start start) edited-end
+                                               (list 'pilish-tool-output-footer selection 'pilish-tool-section 'output))
+                          (add-text-properties align (1+ align)
+                                               (list 'pilish-tool-footer-align-width align-width 'face 'pilish-tool-duration
+                                                     'display (pilish--tool-footer-align-display align-width)))
+                          (when control-end
+                            (let ((width (+ (string-width (buffer-substring-no-properties footer control-end))
+                                            (string-width label) 2)))
+                              (add-text-properties control-end (1+ control-end)
+                                                   (list 'pilish-tool-footer-break-width width
+                                                         'display (pilish--tool-footer-break-display width))))))))
+                    (unless (or label control-end)
+                      (pilish--detach-tool-output-footer view)))))
                ((not control-end)
                 (pilish--detach-tool-output-footer view))))))))))
 

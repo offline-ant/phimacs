@@ -77,11 +77,12 @@ HELP describes it.  Pressing does nothing, so point stays in the draft."
 
 (defun pilish--queue-panel-queue-lines ()
   "Return the lines showing the current chat buffer's queued messages."
-  (let* ((rows (append (mapcar (lambda (text) (cons "Steering" text))
-                               (pilish--queued-steering))
-                       (mapcar (lambda (text) (cons "Follow-up" text))
-                               (pilish--queued-followups))))
-         (hidden (- (length rows) pilish--queue-panel-rows)))
+  (pcase-let* ((`(,followups ,steering) (pilish--queued-prompt-groups))
+               (rows (append (mapcar (lambda (text) (cons "Steering" text))
+                                     steering)
+                             (mapcar (lambda (text) (cons "Follow-up" text))
+                                     followups)))
+               (hidden (- (length rows) pilish--queue-panel-rows)))
     (when rows
       (append
        (mapcar (lambda (row)
@@ -108,7 +109,7 @@ HELP describes it.  Pressing does nothing, so point stays in the draft."
   (append
    (pilish--queue-panel-queue-lines)
    (when (and (pilish--process-shared-p pilish--process)
-              (or (pilish--queued-steering) (pilish--queued-followups)))
+              (pilish--session-queued-p))
      (list (propertize "Shared queue: clear affects EVERY frontend; recovery belongs to the requester."
                        'face 'pilish-queued-message)))
    (when pilish--input-quarantine

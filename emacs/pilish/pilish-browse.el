@@ -43,7 +43,8 @@
 ;; refresh manually with `g'.  Tree labels are appended out-of-band and
 ;; fold back into every disk read.
 ;;
-;; Session switching uses menu.el's guarded resume flow.  Renaming the
+;; Session switching reveals an existing live owner without RPC, or
+;; uses menu.el's guarded resume flow for a closed session.  Renaming the
 ;; linked current session asks pi to append session_info; renaming any
 ;; other session appends session_info out-of-band.  Tree navigation
 ;; guards the linked session, process, and loaded file; computes the
@@ -1114,31 +1115,6 @@ so scan order never leaks."
                           (or (plist-get b :canonicalPath)
                               (plist-get b :path) "")))))))
     (_ items)))
-
-(defun pilish--canonical-session-path (path &optional memo anchor)
-  "Return PATH's canonical spelling for session family identity.
-Remote spellings keep their full TRAMP route as the identity — never
-resolved, so no remote filesystem is contacted and distinct routes
-stay distinct identities.  Local spellings resolve symlinks along
-the whole path through `file-truename', so alias spellings of one
-file — a symlinked sessions directory or a symlinked session file
-itself — denote one family.  A spelling `file-truename' cannot
-resolve, such as a symlink cycle, keeps its lexical form instead of
-signaling — like pi's realpath fallback.  MEMO, when non-nil, is a
-hash table caching canonical spellings across calls; ANCHOR, when
-non-nil, anchors relative spellings as
-`pilish--route-preserving-expand-file-name' does."
-  (when (stringp path)
-    (let ((expanded (pilish--route-preserving-expand-file-name path anchor)))
-      (if (pilish--remote-prefix-for-path expanded)
-          expanded
-        (let ((memo (or memo (make-hash-table :test 'equal))))
-          (or (gethash expanded memo)
-              (puthash expanded
-                       (condition-case nil
-                           (file-truename expanded)
-                         (error expanded))
-                       memo)))))))
 
 (defun pilish--session-item-key (item &optional memo)
   "Return ITEM's canonical identity key.
@@ -4768,11 +4744,11 @@ chat buffer."
       chat-buf)))
 
 (defun pilish--browse-switch-session (path)
-  "Switch the linked chat session to session file PATH.
-A browser whose linked chat buffer was killed opens PATH in a fresh view
-instead (`pilish--browse-open-in-new-view').  Otherwise the guards,
-in order: a live pi process (else `user-error'), and no session
-transition in flight —
+  "Activate a live owner of PATH, or resume PATH in the linked chat.
+A browser whose linked chat buffer was killed opens a closed PATH in a
+fresh view instead (`pilish--browse-open-in-new-view').  Otherwise
+guards require a live pi process or signal `user-error', and refuse an
+active session transition.
 `pilish--browse-transition-refused-p' gates both an active
 transition, which keeps the status idle (without the explicit check a
 second RET would race the first switch), and the ready guard, which
@@ -4785,19 +4761,30 @@ landed on PATH; a failed switch leaves the browser open (menu already
 messaged).  No extra refresh logic: \\[pilish-browse-refresh]
 re-derives the \"current\" scope live and the entry point opens a fresh
 browser per project directory."
-  (let ((chat-buf pilish--chat-buffer))
-    (if (not (buffer-live-p chat-buf))
-        (pilish--browse-open-in-new-view path)
-    (let* ((proc (buffer-local-value 'pilish--process chat-buf))
-           (input-context (pilish--capture-input-context proc)))
-      (unless (pilish--session-live-process-p proc)
-        (user-error "Pi process is not running"))
-      (unless (pilish--browse-transition-refused-p chat-buf "switch")
-        (if (pilish--process-shared-p proc)
-            (pilish--resume-selected-session proc chat-buf path input-context)
-          (pilish--resume-selected-session proc chat-buf path))
-        (pilish--browse-quit-when-settled
-         chat-buf (selected-window) path))))))
+  (if-let* ((owner (pilish--browse-live-session-chat-buffer path)))
+      (let ((browser-window (selected-window))
+            (input-buf (buffer-local-value 'pilish--input-buffer owner)))
+        (pilish--show-session-buffers owner input-buf)
+        (when (and (window-live-p browser-window)
+                   (with-current-buffer (window-buffer browser-window)
+                     (derived-mode-p 'pilish-session-browser-mode
+                                     'pilish-tree-browser-mode)))
+          (save-selected-window
+            (quit-window nil browser-window))))
+    (let ((chat-buf pilish--chat-buffer))
+      (if (not (buffer-live-p chat-buf))
+          (pilish--browse-open-in-new-view path)
+        (let* ((proc (buffer-local-value 'pilish--process chat-buf))
+               (input-context (pilish--capture-input-context proc)))
+          (unless (pilish--session-live-process-p proc)
+            (user-error "Pi process is not running"))
+          (unless (pilish--browse-transition-refused-p chat-buf "switch")
+            (if (pilish--process-shared-p proc)
+                (pilish--resume-selected-session
+                 proc chat-buf path input-context)
+              (pilish--resume-selected-session proc chat-buf path))
+            (pilish--browse-quit-when-settled
+             chat-buf (selected-window) path)))))))
 
 (defun pilish--browse-poll-settled (chat-buf win path deadline)
   "Polling body of `pilish--browse-quit-when-settled'.

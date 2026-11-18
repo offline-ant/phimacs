@@ -138,7 +138,6 @@ A failing function is reported as a warning; the others still run.")
                (file-executable-p pilish-runtime-pimux-executable))
     (error "Configure an absolute compiled pimux executable first"))
   (let ((default-directory temporary-file-directory)
-        (process-environment (pilish--runtime-environment nil))
         (stderr (generate-new-buffer " *pilish-runtime-watch-stderr*")))
     (condition-case err
         (let ((process (make-process

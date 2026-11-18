@@ -84,6 +84,61 @@ This ensures all files get code fences for consistent display."
       (when (buffer-live-p buf1)
         (kill-buffer buf1)))))
 
+(ert-deftest pilish-test-session-buffer-list-directory-on-creation ()
+  "Chat and input buffers expose local or remote directories to buffer lists."
+  (let ((original-default (default-value 'list-buffers-directory)))
+    (dolist (dir '("/tmp/pilish-test-buffer-list/"
+                   "/ssh:bastion|sudo:root@pi-host:/srv/project/"))
+      (dolist (session '(nil "feature"))
+        (dolist (type '(:chat :input))
+          (let ((buf (pilish--get-or-create-buffer type dir session)))
+            (unwind-protect
+                (with-current-buffer buf
+                  (should (local-variable-p 'list-buffers-directory))
+                  (should (equal list-buffers-directory dir))
+                  (should (equal default-directory dir))
+                  (should-not buffer-file-name))
+              (pilish-test--kill-live-buffers buf))))))
+    (should (equal (default-value 'list-buffers-directory) original-default))))
+
+(ert-deftest pilish-test-session-buffer-list-directory-on-reuse ()
+  "Session setup refreshes directory metadata in existing chat/input buffers."
+  (let ((dir (pilish-test--make-temp-directory "pilish-test-buffer-list-")))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let* ((chat (pilish--find-session dir))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (dolist (buf (list chat input))
+              (with-current-buffer buf
+                (setq-local list-buffers-directory "/tmp/stale/")))
+            (should (eq (pilish--setup-session dir) chat))
+            (should (eq (buffer-local-value 'pilish--input-buffer chat) input))
+            (dolist (buf (list chat input))
+              (with-current-buffer buf
+                (should (local-variable-p 'list-buffers-directory))
+                (should (equal list-buffers-directory dir))))))
+      (delete-directory dir t))))
+
+(ert-deftest pilish-test-session-buffer-list-directory-on-retarget ()
+  "Retargeting a session updates both buffers' directory metadata."
+  (let* ((dir (pilish-test--make-temp-directory "pilish-test-buffer-list-"))
+         (target (expand-file-name "other/" dir)))
+    (unwind-protect
+        (pilish-test-with-mock-session dir
+          (let* ((chat (pilish--find-session dir))
+                 (input (buffer-local-value 'pilish--input-buffer chat)))
+            (unwind-protect
+                (progn
+                  (with-current-buffer input
+                    (pilish--retarget-session-buffers target))
+                  (dolist (buf (list chat input))
+                    (with-current-buffer buf
+                      (should (local-variable-p 'list-buffers-directory))
+                      (should (equal list-buffers-directory target))
+                      (should (equal default-directory target)))))
+              (pilish-test--kill-live-buffers input chat))))
+      (delete-directory dir t))))
+
 ;;; Major Modes
 
 (ert-deftest pilish-test-chat-mode-is-read-only ()
@@ -309,7 +364,7 @@ This ensures all files get code fences for consistent display."
         (make-backup-files nil))
     (unwind-protect
         (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-                  ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+                  ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
           (setq chat (pilish--setup-session root nil)
                 input (buffer-local-value 'pilish--input-buffer chat))
           (setq file (pilish-test--write-chat-buffer
@@ -578,7 +633,7 @@ Closes the category from issue #234: any instance without a usable
   (let ((default-directory "/tmp/pilish-test-proc1/")
         (fake-proc 'mock-process))
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) fake-proc))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) fake-proc))
               ((symbol-function 'pilish--display-buffers) #'ignore))
       (unwind-protect
           (progn
@@ -593,7 +648,7 @@ Closes the category from issue #234: any instance without a usable
   (let ((default-directory "/tmp/pilish-test-proc2/")
         (fake-proc 'mock-process))
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) fake-proc))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) fake-proc))
               ((symbol-function 'pilish--display-buffers) #'ignore))
       (unwind-protect
           (progn
@@ -609,7 +664,7 @@ Closes the category from issue #234: any instance without a usable
         (all-frames-args nil))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
                  (input (buffer-local-value 'pilish--input-buffer chat))
@@ -679,7 +734,7 @@ Closes the category from issue #234: any instance without a usable
   (let ((root "/tmp/pilish-test-dedicated/"))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
                  (input (buffer-local-value 'pilish--input-buffer chat)))
@@ -695,7 +750,7 @@ Closes the category from issue #234: any instance without a usable
   (let ((root "/tmp/pilish-test-display-chat-only/"))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
                  (input (buffer-local-value 'pilish--input-buffer chat)))
@@ -711,7 +766,7 @@ Closes the category from issue #234: any instance without a usable
   (let ((root "/tmp/pilish-test-open-input-split/"))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
                  (input (buffer-local-value 'pilish--input-buffer chat)))
@@ -801,7 +856,7 @@ window; the default still splits below the chat."
   (let ((root "/tmp/pilish-test-open-input-focus/"))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
                  (input (buffer-local-value 'pilish--input-buffer chat)))
@@ -821,8 +876,7 @@ The gesture works without the Evil integration, mirroring
   (let ((root "/tmp/pilish-test-chat-i-open-input/"))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process)
-               (lambda (_ &optional _args _environment) nil)))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
                  (input (buffer-local-value 'pilish--input-buffer chat)))
@@ -852,7 +906,7 @@ The gesture works without the Evil integration, mirroring
         (pilish-input-window-display 'on-demand))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil))
               ((symbol-function 'pilish--prepare-and-send) #'ignore))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
@@ -873,7 +927,7 @@ The gesture works without the Evil integration, mirroring
         (pilish-input-window-display 'always))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil))
               ((symbol-function 'pilish--prepare-and-send) #'ignore))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
@@ -888,22 +942,27 @@ The gesture works without the Evil integration, mirroring
         (delete-other-windows)))))
 
 (ert-deftest pilish-test-show-session-buffers-hidden-launches-chat-only ()
-  "A fresh session launches chat-only when display is `hidden'.
-`pilish--show-session-buffers' honors
-`pilish-input-window-display', so a `hidden' session starts
-without an input window."
+  "A fresh session launches chat-only when display is `hidden'."
   (let ((root "/tmp/pilish-test-show-hidden/")
         (pilish-input-window-display 'hidden))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
                  (input (buffer-local-value 'pilish--input-buffer chat)))
             (delete-other-windows)
             (pilish--show-session-buffers chat input)
             (should (get-buffer-window chat))
-            (should-not (get-buffer-window input)))
+            (should-not (get-buffer-window input))
+            (should (eq (selected-window) (get-buffer-window chat)))
+            (with-temp-buffer
+              (let ((other-window (split-window-right)))
+                (set-window-buffer other-window (current-buffer))
+                (select-window other-window))
+              (pilish--show-session-buffers chat input)
+              (should-not (get-buffer-window input))
+              (should (eq (selected-window) (get-buffer-window chat)))))
         (pilish-test--kill-session-buffers root)
         (delete-other-windows)))))
 
@@ -913,7 +972,7 @@ without an input window."
         (pilish-input-window-display 'hidden))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil))
               ((symbol-function 'pilish--prepare-and-send) #'ignore))
       (unwind-protect
           (let* ((chat (pilish--setup-session root nil))
@@ -934,7 +993,7 @@ without an input window."
         (all-frames-args nil))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil)))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil)))
       (unwind-protect
           (progn
             (delete-other-windows)
@@ -1924,7 +1983,7 @@ Buffer is read-only with `inhibit-read-only' used for insertion.
         (original-default (default-value 'other-window-scroll-buffer)))
     (make-directory root t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil))
               ((symbol-function 'pilish--display-buffers) #'ignore))
       (unwind-protect
           (progn
@@ -1948,7 +2007,7 @@ Buffer is read-only with `inhibit-read-only' used for insertion.
     (make-directory root-a t)
     (make-directory root-b t)
     (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
-              ((symbol-function 'pilish--start-process) (lambda (_ &optional _args _environment) nil))
+              ((symbol-function 'pilish--start-process) (lambda (&rest _) nil))
               ((symbol-function 'pilish--display-buffers) #'ignore))
       (unwind-protect
           (progn
@@ -3789,7 +3848,7 @@ Catches wiring bugs like requiring deleted modules."
         (optional-called nil))
     (cl-letf (((symbol-function 'pilish--check-pi) (lambda (&optional _directory) t))
               ((symbol-function 'pilish--maybe-install-essential-grammars)
-               (lambda () (setq essential-called t)))
+               (lambda (&optional _background) (setq essential-called t)))
               ((symbol-function 'pilish--maybe-warn-incompatible-markdown-grammar)
                (lambda () (setq compatibility-called t)))
               ((symbol-function 'pilish--maybe-install-optional-grammars)
@@ -3991,6 +4050,314 @@ Pi's isStreaming includes post-run processing, not just the low-level loop."
                            "new-session"))
             (should (null pilish--unsupported-extension-ui-methods-warned))))
       (kill-buffer chat-buf))))
+
+;;; Session identity observers
+
+(ert-deftest pilish-test-session-identity-initial-and-changed-state ()
+  "Notify on first state and changed files, but not failure or unchanged state."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let* ((chat (current-buffer))
+           (response '(:success t :data (:sessionFile "/tmp/initial.jsonl")))
+           (seen nil)
+           (pilish-session-identity-functions
+            (list (lambda (buffer file _directory _name)
+                    (should (eq buffer chat))
+                    (push file seen)))))
+      (pilish--apply-state-response chat '(:success :false))
+      (should-not seen)
+      (pilish--apply-state-response chat response)
+      (should (equal seen '("/tmp/initial.jsonl")))
+      (pilish--apply-state-response chat response)
+      (should (= (length seen) 1))
+      (pilish--apply-state-response
+       chat '(:success t :data (:sessionFile "/tmp/forked.jsonl")))
+      (should (equal seen '("/tmp/forked.jsonl" "/tmp/initial.jsonl"))))))
+
+(ert-deftest pilish-test-session-identity-retarget-observes-linked-pair ()
+  "Retarget notifies only after both buffers have coherent names and directories."
+  (let ((chat (generate-new-buffer " *identity-chat*"))
+        (input (generate-new-buffer " *identity-input*"))
+        (seen nil))
+    (unwind-protect
+        (with-current-buffer chat
+          (pilish-chat-mode)
+          (pilish--set-chat-session-identity "/tmp/identity-before/")
+          (pilish--set-input-buffer input)
+          (let ((pilish-session-identity-functions
+                 (list (lambda (buffer _file directory name)
+                         (should (eq buffer chat))
+                         (should (equal directory "/tmp/identity-after/"))
+                         (should (equal name (buffer-name buffer)))
+                         (should (equal name
+                                        (pilish--buffer-name
+                                         :chat "/tmp/identity-after/")))
+                         (with-current-buffer input
+                           (should (equal default-directory
+                                          "/tmp/identity-after/"))
+                           (should (equal (buffer-name)
+                                          (pilish--buffer-name
+                                           :input "/tmp/identity-after/")))
+                           (should (eq pilish--chat-buffer chat)))
+                         (push buffer seen)))))
+            (pilish--retarget-session-buffers "/tmp/identity-after/")
+            (pilish--retarget-session-buffers "/tmp/identity-after/")
+            (should (equal seen (list chat)))))
+      (kill-buffer input)
+      (kill-buffer chat))))
+
+(ert-deftest pilish-test-session-identity-transition-coalesces-updates ()
+  "A resume that changes file, directory and name announces only its final identity."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/tmp/identity-old/")
+    (pilish--apply-state-response
+     (current-buffer) '(:success t :data (:sessionFile "/tmp/old.jsonl")))
+    (let* ((chat (current-buffer))
+           (seen nil)
+           (pilish-session-identity-functions
+            (list (lambda (buffer &rest identity)
+                    (should (eq buffer chat))
+                    (push identity seen))))
+           (generation (pilish--begin-session-transition)))
+      (pilish--retarget-session-buffers "/tmp/identity-new/")
+      (pilish--apply-state-response
+       chat '(:success t :data (:sessionFile "/tmp/new.jsonl")))
+      (should-not seen)
+      ;; A stale completion must neither publish partial state nor end the guard.
+      (pilish--finish-session-transition (1- generation))
+      (should-not seen)
+      (pilish--finish-session-transition generation)
+      (should (equal seen
+                     (list (list "/tmp/new.jsonl" "/tmp/identity-new/"
+                                 (pilish--buffer-name
+                                  :chat "/tmp/identity-new/")))))
+      (pilish--finish-session-transition generation)
+      (should (= (length seen) 1)))))
+
+(ert-deftest pilish-test-session-identity-stale-thinking-refresh-cannot-confirm-resume ()
+  "An old thinking query cannot confirm a resume whose own state refresh fails."
+  (pilish-test-with-rpc-session (chat _input proc commands)
+    (with-current-buffer chat
+      (pilish--set-chat-session-identity "/tmp/identity-old/")
+      (pilish--apply-state-response
+       chat '(:success t :data (:sessionFile "/tmp/old.jsonl")))
+      (let ((seen nil)
+            (pilish-session-identity-functions nil))
+        (setq pilish-session-identity-functions
+              (list (lambda (_buffer &rest identity)
+                      (push identity seen))))
+        (pilish--refresh-thinking-level-state proc chat)
+        (let* ((stale-request (car commands))
+               (generation (pilish--begin-session-transition proc)))
+          (pilish--retarget-session-buffers "/tmp/identity-new/")
+          (pilish--refresh-session-state proc chat nil generation)
+          (let ((current-request (car commands)))
+            ;; The old query was issued before the switch, even though its
+            ;; successful response arrives during the new transition.
+            (pilish--dispatch-response
+             proc (list :type "response" :command "get_state"
+                        :id (plist-get stale-request :id) :success t
+                        :data '(:sessionFile "/tmp/old.jsonl"
+                                :thinkingLevel "stale")))
+            (should pilish--session-identity-state-pending)
+            (should-not (equal (plist-get pilish--state :thinking-level) "stale"))
+            (pilish--dispatch-response
+             proc (list :type "response" :command "get_state"
+                        :id (plist-get current-request :id) :success :false
+                        :error "State refresh failed"))
+            (pilish--finish-session-transition generation)
+            (should-not seen))
+          ;; A fresh query issued after the failed transition can confirm its
+          ;; current identity; repeated authoritative state is a no-op.
+          (dotimes (_ 2)
+            (pilish--refresh-thinking-level-state proc chat)
+            (pilish--dispatch-response
+             proc (list :type "response" :command "get_state"
+                        :id (plist-get (car commands) :id) :success t
+                        :data '(:sessionFile "/tmp/new.jsonl"
+                                :thinkingLevel "high"))))
+          (should (equal seen
+                         (list (list "/tmp/new.jsonl" "/tmp/identity-new/"
+                                     (pilish--buffer-name
+                                      :chat "/tmp/identity-new/"))))))))))
+
+(ert-deftest pilish-test-session-identity-stale-startup-refresh-cannot-confirm-resume ()
+  "Startup's delayed state reply is not authoritative for a newer session switch."
+  (pilish-test-with-rpc-session (chat input proc commands)
+    (let ((seen nil)
+          (pilish-session-identity-functions nil)
+          (name "identity-startup-stale"))
+      (setq pilish-session-identity-functions
+            (list (lambda (buffer &rest _) (push buffer seen))))
+      (with-current-buffer chat
+        (pilish--set-chat-session-identity "/tmp/" name)
+        (setq pilish--process nil))
+      (with-current-buffer input
+        (rename-buffer (pilish--buffer-name :input "/tmp/" name)))
+      (cl-letf (((symbol-function 'pilish--check-dependencies) #'ignore)
+                ((symbol-function 'pilish--start-process)
+                 (lambda (_dir &optional _args _environment) proc))
+                ((symbol-function 'pilish--fetch-commands) #'ignore))
+        (should (eq (pilish--setup-session "/tmp/" name) chat)))
+      (let ((startup-request (car commands)))
+        (should (equal (plist-get startup-request :type) "get_state"))
+        (with-current-buffer chat
+          (let ((generation (pilish--begin-session-transition proc)))
+            (pilish--retarget-session-buffers "/tmp/identity-startup-resume/")
+            (pilish--dispatch-response
+             proc (list :type "response" :command "get_state"
+                        :id (plist-get startup-request :id) :success t
+                        :data '(:sessionFile "/tmp/startup-old.jsonl")))
+            (should pilish--session-identity-state-pending)
+            (should-not (plist-get pilish--state :session-file))
+            (pilish--apply-state-response chat '(:success :false))
+            (pilish--finish-session-transition generation)
+            (should-not seen)))))))
+
+(ert-deftest pilish-test-session-identity-thinking-refresh-defers-to-active-transition ()
+  "A query started before switch acknowledgment must not race its owned refresh."
+  (pilish-test-with-rpc-session (chat _input proc commands)
+    (with-current-buffer chat
+      (pilish--begin-session-transition proc)
+      (pilish--refresh-thinking-level-state proc chat)
+      (should-not commands)
+      (should pilish--session-identity-state-pending))))
+
+(ert-deftest pilish-test-session-identity-failed-refresh-keeps-unconfirmed-state-private ()
+  "A failed resume refresh never announces new names alongside the old saved file."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (pilish--set-chat-session-identity "/tmp/identity-old/")
+    (pilish--apply-state-response
+     (current-buffer) '(:success t :data (:sessionFile "/tmp/old.jsonl")))
+    (let* ((seen nil)
+           (pilish-session-identity-functions
+            (list (lambda (_buffer file &rest _) (push file seen))))
+           (generation (pilish--begin-session-transition)))
+      (pilish--retarget-session-buffers "/tmp/identity-unconfirmed/")
+      (pilish--apply-state-response (current-buffer) '(:success :false))
+      (pilish--finish-session-transition generation)
+      (should-not seen)
+      (pilish--apply-state-response
+       (current-buffer) '(:success t :data (:sessionFile "/tmp/confirmed.jsonl")))
+      (should (equal seen '("/tmp/confirmed.jsonl"))))))
+
+(ert-deftest pilish-test-session-identity-fork-notifies-after-state-and-history ()
+  "The real fork lifecycle publishes one identity after its two refreshes finish."
+  (pilish-test-with-rpc-session (chat _input proc commands)
+    (with-current-buffer chat
+      (pilish--apply-state-response
+       chat '(:success t :data (:sessionFile "/tmp/original.jsonl")))
+      (let ((seen nil)
+            (pilish-session-identity-functions nil))
+        (setq pilish-session-identity-functions
+              (list (lambda (_buffer file &rest _) (push file seen))))
+        (cl-letf (((symbol-function 'pilish--update-session-name-from-file) #'ignore))
+          (pilish--execute-fork proc "user-1")
+          (pilish--dispatch-response
+           proc (list :type "response" :command "fork"
+                      :id (plist-get (car commands) :id)
+                      :success t :data '(:text "Forked prompt")))
+          (let ((state-request (cl-find "get_state" commands
+                                        :key (lambda (cmd) (plist-get cmd :type))
+                                        :test #'equal))
+                (history-request (cl-find "get_messages" commands
+                                          :key (lambda (cmd) (plist-get cmd :type))
+                                          :test #'equal)))
+            (should state-request)
+            (should history-request)
+            (pilish--dispatch-response
+             proc (list :type "response" :command "get_state"
+                        :id (plist-get state-request :id)
+                        :success t :data '(:sessionFile "/tmp/forked.jsonl")))
+            (should-not seen)
+            (pilish--dispatch-response
+             proc (list :type "response" :command "get_messages"
+                        :id (plist-get history-request :id)
+                        :success t :data '(:messages [])))
+            (should (equal seen '("/tmp/forked.jsonl")))))))))
+
+(ert-deftest pilish-test-session-identity-observes-rename-without-process ()
+  "Stopped chats and absent inputs do not prevent notification on buffer rename."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let ((response '(:success t :data (:sessionFile "/tmp/same.jsonl")))
+          (seen nil))
+      (pilish--apply-state-response (current-buffer) response)
+      (let ((pilish-session-identity-functions
+             (list (lambda (_buffer _file _directory name) (push name seen)))))
+        (rename-buffer " *identity-renamed*" t)
+        (pilish--apply-state-response (current-buffer) response)
+        (pilish--apply-state-response (current-buffer) response)
+        (should (equal seen (list (buffer-name))))))))
+
+(ert-deftest pilish-test-session-identity-observer-errors-are-isolated ()
+  "A failed observer warns once and cannot block later observers or state updates."
+  (with-temp-buffer
+    (pilish-chat-mode)
+    (let* ((warnings nil)
+           (seen nil)
+           (debug-on-error nil)
+           (pilish-session-identity-functions
+            (list (lambda (&rest _) (error "Identity observer failed"))
+                  (lambda (buffer &rest _) (push buffer seen)))))
+      (cl-letf (((symbol-function 'display-warning)
+                 (lambda (type message level &rest _)
+                   (should (eq type 'pilish))
+                   (should (eq level :error))
+                   (push message warnings))))
+        (dotimes (_ 2)
+          (pilish--apply-state-response
+           (current-buffer) '(:success t :data (:sessionFile "/tmp/error.jsonl"))))
+        (should (equal seen (list (current-buffer))))
+        (should (= (length warnings) 1))
+        (should (string-match-p "Identity observer failed" (car warnings)))))))
+
+(ert-deftest pilish-test-session-identity-ignores-missing-chat ()
+  "Late state responses for a killed chat leave observers untouched."
+  (let ((chat (generate-new-buffer " *identity-dead*"))
+        (seen nil))
+    (kill-buffer chat)
+    (let ((pilish-session-identity-functions
+           (list (lambda (buffer &rest _) (push buffer seen)))))
+      (pilish--apply-state-response
+       chat '(:success t :data (:sessionFile "/tmp/late.jsonl")))
+      (should-not seen))))
+
+(ert-deftest pilish-test-session-identity-ignores-symlink-aliases ()
+  "Symlink spellings of the same saved file and directory are not changes.
+macOS reaches /tmp and $TMPDIR through symlinks, so Pi and Pilish can spell
+one file or directory differently across resume and reload."
+  (let* ((real (file-name-as-directory
+                (file-truename (make-temp-file "pilish-identity-" t))))
+         (link (file-name-as-directory
+                (concat (directory-file-name real) "-link")))
+         (seen nil))
+    (make-symbolic-link (directory-file-name real) (directory-file-name link))
+    (unwind-protect
+        (with-temp-buffer
+          (pilish-chat-mode)
+          (pilish--set-chat-session-identity link)
+          (let ((pilish-session-identity-functions
+                 (list (lambda (_buffer &rest identity) (push identity seen))))
+                (state (lambda (dir file)
+                         (pilish--apply-state-response
+                          (current-buffer)
+                          `(:success t
+                            :data (:sessionFile ,(expand-file-name file dir)))))))
+            (funcall state link "a.jsonl")
+            (pilish--set-chat-session-identity real)
+            (funcall state real "a.jsonl")
+            ;; Observers keep the first announced spelling.
+            (should (equal seen (list (list (expand-file-name "a.jsonl" link)
+                                            link (buffer-name)))))
+            (funcall state real "b.jsonl")
+            (should (equal (car seen) (list (expand-file-name "b.jsonl" real)
+                                            real (buffer-name))))
+            (should (= (length seen) 2))))
+      (delete-file (directory-file-name link))
+      (delete-directory real t))))
 
 ;;; Input Window Height (integer and float ratio)
 

@@ -1,13 +1,13 @@
 # Pilish: maintained Phimacs modified version
 
-**Modified-version notice — 2026-11-16.** Phimacs maintains this modified version
+**Modified-version notice — 2026-11-18.** Phimacs maintains this modified version
 of Pilish. It is not an unmodified release from the upstream Pilish project.
 This notice describes the maintained source as of that date.
 
 ## Source and license
 
 - Upstream: https://github.com/dnouri/pilish, incorporated base
-  `5a83d26a44fc87cf54b52b2f9d80806964dd5634`.
+  `69179108707fd056885707314404efc6d0cf8d2e`.
 - This Pilish package is released under **GPL-3.0-or-later**. See [LICENSE](LICENSE)
   for the GNU General Public License. Original copyright, authorship, upstream
   identity and license notices remain in the source; this notice does not

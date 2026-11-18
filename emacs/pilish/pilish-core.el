@@ -289,6 +289,31 @@ This is a pure string helper; do not use it around real file I/O."
         (abbreviate-file-name path))
     (abbreviate-file-name path)))
 
+(defun pilish--canonical-session-path (path &optional memo anchor)
+  "Return PATH's canonical spelling for session identity.
+Remote spellings keep their full TRAMP route as the identity — never
+resolved, so no remote filesystem is contacted and distinct routes
+stay distinct identities.  Local spellings resolve symlinks along
+the whole path through `file-truename', so alias spellings of one
+file — a symlinked sessions directory or a symlinked session file
+itself — denote one family.  A spelling `file-truename' cannot
+resolve, such as a symlink cycle, keeps its lexical form instead of
+signaling — like pi's realpath fallback.  MEMO, when non-nil, is a
+hash table caching canonical spellings across calls; ANCHOR, when
+non-nil, anchors relative spellings as
+`pilish--route-preserving-expand-file-name' does."
+  (when (stringp path)
+    (let ((expanded (pilish--route-preserving-expand-file-name path anchor)))
+      (if (pilish--remote-prefix-for-path expanded)
+          expanded
+        (let ((memo (or memo (make-hash-table :test 'equal))))
+          (or (gethash expanded memo)
+              (puthash expanded
+                       (condition-case nil
+                           (file-truename expanded)
+                         (error expanded))
+                       memo)))))))
+
 (defun pilish--ensure-compatible-remote-path (path &optional anchor)
   "Signal `user-error' when remote PATH is incompatible with ANCHOR.
 ANCHOR defaults to `default-directory'.  Remote PATH must use the same TRAMP
@@ -988,36 +1013,67 @@ This is useful for testing extensions or passing additional flags.")
       (_ (error "Invalid pilish-project-trust-policy: %S" policy)))))
 
 (defun pilish--pi-command (&optional args)
-  "Return the argv used to start Pi in RPC mode, including per-process ARGS."
+  "Return the argv used to start Pi in RPC mode.
+ARGS are this process's own arguments, appended last."
   (append pilish-executable
           '("--mode" "rpc")
           pilish-extra-args
           (pilish--project-trust-args)
           args))
 
-(defun pilish--remote-start-command (command)
+(defun pilish--remote-start-command (command &optional environment)
   "Return a remote shell wrapper COMMAND that emits the ready marker.
-COMMAND is passed as `$0' and `$@' to preserve the original argv exactly."
-  (append (list "sh" "-c"
-                (format "printf '%%s\\n' %s; exec \"$0\" \"$@\""
-                        (shell-quote-argument
-                         pilish--remote-ready-marker)))
-          command))
+COMMAND is passed as `$0' and `$@' to preserve the original argv exactly.
+Explicitly unset names with nil values in ENVIRONMENT: TRAMP's direct-async
+launcher otherwise discards those entries instead of removing them remotely."
+  (let (seen unset)
+    (pcase-dolist (`(,name . ,value) environment)
+      (unless (member name seen)
+        (push name seen)
+        (unless value (push name unset))))
+    (append (list "sh" "-c"
+                  (concat
+                   (if unset
+                       (format "unset %s; "
+                               (mapconcat #'shell-quote-argument
+                                          (nreverse unset) " "))
+                     "")
+                   (format "printf '%%s\\n' %s; exec \"$0\" \"$@\""
+                           (shell-quote-argument
+                            pilish--remote-ready-marker))))
+            command)))
+
+(defun pilish--process-environment (overrides)
+  "Return `process-environment' with OVERRIDES applied.
+OVERRIDES is an alist of (NAME . VALUE); a nil VALUE removes NAME, and
+an earlier entry wins over a later one for the same NAME.  The result is
+built as data, not with `setenv', whose `TZ' handling would change the
+time zone of this Emacs."
+  (let (names entries)
+    (pcase-dolist (`(,name . ,value) overrides)
+      (unless (member name names)
+        (push name names)
+        (push (if value (concat name "=" value) name) entries)))
+    (append (nreverse entries)
+            (cl-remove-if (lambda (entry)
+                            (member (substring entry 0 (string-search "=" entry))
+                                    names))
+                          process-environment))))
 
 (defun pilish--start-process (directory &optional args environment)
-  "Start pi RPC process in DIRECTORY with ARGS and ENVIRONMENT.
-ENVIRONMENT is an alist of per-process environment overrides.
-Returns the process object without waiting for startup."
+  "Start pi RPC process in DIRECTORY.
+ARGS are extra command-line arguments for this process only.  ENVIRONMENT
+is an alist of (NAME . VALUE) overrides for this process only, as
+`pilish--process-environment' applies them.
+Returns the process object."
   (let* ((default-directory directory)
-         (process-environment (copy-sequence process-environment))
+         (process-environment (pilish--process-environment environment))
          (remote-start-p (pilish--remote-prefix directory))
          (command (pilish--pi-command args))
          (process-command (if remote-start-p
-                              (pilish--remote-start-command command)
+                              (pilish--remote-start-command command environment)
                             command))
          (stderr-buf (generate-new-buffer " *pilish-stderr*")))
-    (dolist (entry (reverse environment))
-      (setenv (car entry) (cdr entry)))
     (condition-case err
         (let ((proc (make-process
                      :name "pi"
