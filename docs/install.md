@@ -275,7 +275,7 @@ Run `phimacs` from a project directory: that directory is the default for a new
 deck space (`M-m d S`). Quit the client frame with `M-m q q`, or the whole Emacs
 daemon with `M-m q Q`. Agents keep running in the service either way, and
 accepted work can continue and incur usage without a visible frontend. The
-[showcase](demo/README.md) records this journey.
+[demo](demo/README.md) shows this.
 
 `phimacs pi [ARGS]` instead opens Pi's own terminal UI under pimux's writer claim.
 It starts neither the service nor Emacs, and the terminal owns its lifetime; see

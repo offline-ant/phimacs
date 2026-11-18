@@ -1,5 +1,7 @@
 # Phimacs
 
+![Phimacs demo](docs/demo/phimacs.gif)
+
 > **Why this exists:** Phimacs brings together tools that I wrote over the past
 > year for my own work with Pi agents. For a long time I used
 > [Herdr](https://herdr.dev). When Emacs turned 50, I went back to Emacs and
@@ -12,12 +14,6 @@ Phimacs runs [Pi](https://github.com/earendil-works/pi-mono) coding agents in
 Emacs. You chat with agents in Pilish and keep each project in its own pi-deck
 space. A background service, pimux, keeps every agent running, also when Emacs
 is closed.
-
-![Phimacs demo: an agent gives a fix to a worker, Emacs quits, and another machine opens the same agent](docs/demo/phimacs.gif)
-
-In the demo (1.25× speed), an agent gives a failing test to a worker. Then Emacs
-quits, but the agent keeps running. A second machine connects over SSH and opens
-the same agent with its unsent draft. Read [about the demo](docs/demo/README.md).
 
 ## How the parts fit together
 
