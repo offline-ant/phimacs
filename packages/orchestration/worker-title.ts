@@ -6,7 +6,7 @@ const fillers = new Set(["only", "separate", "distinct", "new", "subtask", "genu
   "independently", "agreed", "a", "the"]);
 const qualifiers = new Set(["read-only", "independent", "final", "fresh-eyes", "fresh", "focused",
   "narrow", "critical", "critically", "adversarial", "second", "small", "quick"]);
-const actions = new Map([["review", "R"], ["implement", "B"], ["build", "B"], ["investigate", "I"], ["fix", "F"],
+const actions = new Map([["review", "R"], ["implement", "B"], ["build", "B"], ["investigate", "I"],
   ["verify", "V"]]);
 
 /** A short display title, never a worker's operational/recovery identity. */

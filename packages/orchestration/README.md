@@ -173,7 +173,7 @@ another Pi child. Shell panels do not consume worker nesting depth.
   `separate`, `distinct`, `new`, `subtask`, `genuinely`, `actual`, `actually`,
   `independently`, `agreed`, `a`, `the`) are removed. Leading whole-word actions,
   ignoring case and an optional trailing colon, become Review → `R]`,
-  Implement and Build → `B]`, Investigate → `I]`, Fix → `F]`, Verify → `V]`. An
+  Implement and Build → `B]`, Investigate → `I]`, Verify → `V]`. Fix stays a word. An
   opening pair joined by `and` or `&` combines prefixes in order: `Review and
   implement` → `RB]`. Up to three leading qualifiers (`read-only`, `independent`,
   `final`, `fresh-eyes`, `fresh`, `focused`, `narrow`, `critical(ly)`,

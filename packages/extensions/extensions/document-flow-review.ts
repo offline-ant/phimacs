@@ -156,6 +156,8 @@ export default function documentFlowReviewExtension(pi: ExtensionAPI): void {
 	pi.registerTool(defineTool<typeof documentFlowReviewToolSchema, DocumentFlowReviewToolDetails>({
 			name: TOOL_NAME,
 			label: "Document Flow Review",
+			// Its long description costs context in every request; /tools enables it.
+			defaultActive: false,
 			description: "Read one document strictly in sequence without lookahead and review whether each part follows coherently and consistently from earlier parts. Use for internal logical flow, definitions, transitions, expectations, internal contradictions, and misplaced or late information. Do not use to verify factual truth, external validity, real-world correctness, or agreement with project context. Returns the final review and artifact paths.",
 			promptSnippet: "Review one document's internal coherence by reading it sequentially without lookahead",
 			promptGuidelines: [

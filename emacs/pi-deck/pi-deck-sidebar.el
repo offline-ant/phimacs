@@ -782,10 +782,10 @@ restore the original selected tab rather than leaving a sidebar to reappear."
                (current (1+ (or (cl-position-if (lambda (tab) (eq (car tab) 'current-tab)) tabs) 0))))
           (unwind-protect
               (dotimes (index (length tabs))
-                (when (> (length tabs) 1) (tab-bar-select-tab (1+ index)))
+                (when (> (length tabs) 1) (pi-deck--select-tab (1+ index)))
                 (dolist (window (get-buffer-window-list buffer nil frame))
                   (when (window-parameter window 'window-side) (delete-window window))))
-            (when (> (length tabs) 1) (tab-bar-select-tab current))))))))
+            (when (> (length tabs) 1) (pi-deck--select-tab current))))))))
 
 (defvar pi-deck--sidebar-resize-timers nil
   "Pending (FRAME . TIMER) sidebar synchronization jobs.")

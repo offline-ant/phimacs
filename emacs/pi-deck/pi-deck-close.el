@@ -77,9 +77,9 @@ Layouts of spaces not on screen are shown briefly to change them."
           (when (and (not (eq (car tab) 'current-tab))
                      (cl-some (lambda (buffer) (memq buffer buffers))
                               (pi-deck--tab-buffers tab frame)))
-            (tab-bar-select-tab number)
+            (pi-deck--select-tab number)
             (pi-deck--remove-views-here buffers)
-            (tab-bar-select-tab current))))))
+            (pi-deck--select-tab current))))))
   ;; Remembered layouts of spaces no frame shows keep the buffers too.
   (pi-deck--forget-layout-buffers (delq nil (mapcar #'buffer-name buffers))))
 

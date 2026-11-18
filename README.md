@@ -1,36 +1,51 @@
 # Phimacs
 
-Run [Pi](https://github.com/earendil-works/pi-mono) coding agents inside Emacs.
-Your agents keep running when you close Emacs, and you can connect to them
-again from another computer.
+> **Why this exists:** For a long time I used [Herdr](https://herdr.dev), a
+> terminal workspace for coding agents. When Emacs turned 50, I went back to
+> Emacs and rebuilt, as Emacs packages, the Herdr features that I use. I
+> [mentioned this on Hacker News](https://news.ycombinator.com/item?id=50298436#50300314),
+> and people asked me to publish it. So I put the tools that I wrote over the
+> past year into this one repository, to make my setup easy to try.
+>
+> AI agents wrote all of this code; I wrote none of it by hand. I added each
+> part when I needed it, to solve a problem that I had.
+
+Phimacs is my opinionated setup for [Pi](https://github.com/earendil-works/pi-mono)
+coding agents in Emacs, inspired by Herdr. It uses
+[Pilish](https://github.com/dnouri/pilish) for the Pi chat in Emacs and adds
+the parts around it.
 
 [![Phimacs demo](docs/demo/phimacs.gif)](docs/demo/README.md)
 
-## What you get
+## What it adds
 
-- **Chats and project spaces in Emacs.** Each project has its own space with its
-  own window layout. A sidebar lists all agents and shows which ones need you.
+- **Project spaces.** Each project has its own space with its own window
+  layout. A sidebar lists all agents and shows which ones need you.
 - **Agents that keep running.** A background service, pimux, runs the agents.
   Closing Emacs or losing an SSH connection does not stop them. Only the Close
   command stops an agent. When the service starts again, for example after a
   reboot, your agents come back idle with their conversations. Unfinished work
   and workers do not come back.
-- **Workers.** An agent can give a task to a helper agent, a "worker", also on
-  another model, and get the result back.
-- **Terminal panels.** Agents can run servers and other long commands in
+- **Workers and terminals.** An agent can give a task to a helper agent, a
+  "worker", and get the result back. It can run servers and long commands in
   terminals that you can see and use too.
-- **Other computers.** Run `phimacs` on a laptop to open the same agents over
-  SSH. The laptop can also lend its microphone and speaker to the agents.
-- **Optional tools** for web browsing and search, dictation and speech.
+- **Dictation (optional).** Speak into the chat input or any Emacs buffer: click
+  the 🎤 button or press a key. It needs a speech-to-text server.
 
-> **Why this exists:** Phimacs brings together tools that I wrote over the past
-> year for my own work with Pi agents. For a long time I used
-> [Herdr](https://herdr.dev), a terminal workspace for coding agents. When Emacs
-> turned 50, I went back to Emacs and rebuilt, as Emacs packages, the Herdr
-> features that I use. I
-> [mentioned this on Hacker News](https://news.ycombinator.com/item?id=50298436#50300314),
-> and people asked me to publish it. So I put my setup into this one repository,
-> to make it easy to try.
+## Agent tools
+
+Phimacs adds these tools to Pi. Each package's README explains its tools.
+
+| Package | Tools | Complete Emacs setup | Plain `pi` |
+|---|---|---|---|
+| [orchestration](packages/orchestration/README.md) | `do`, `microdo`, `delegate`: give a task to a worker. `panel-start`, `panel-read`, `panel-send`, `panel-close`: terminals for the agent. `wait`: wait for output or a process. | on | on |
+| [extensions](packages/extensions/README.md) | `ask`: ask you a question. `py`: run a short Python script. `prompt_history`, `self_compact`, `/tools` to turn tools on and off, and safety checks for shell commands. | [add it](docs/install.md#log-in-and-set-up) | on |
+| [browser](packages/browser/README.md) | `browser`, `web_search`, `web_fetch`, `web_read`: use a browser, search and read web pages. | [add it](docs/install.md#log-in-and-set-up) | with `--browser` |
+| [sound](packages/sound/README.md) | `/dictate` and Alt+V (the 🎤 button in Emacs), `/speak`. | [add it](docs/install.md#share-the-devices-microphone-speaker-and-notifications) and set up a speech server | with `--sound`, then set up a speech server |
+
+A worker can also run on a second model: choose the model pair with
+`/delegate-alt`. `fresh_look`, a worker without any context, is off until you
+turn it on in `/tools`.
 
 ## Status
 
@@ -75,16 +90,13 @@ the theme, completion or keys of the complete setup. See
 
 ```mermaid
 flowchart LR
-  laptop["Laptop<br/>phimacs over SSH"] --> emacs["Emacs<br/>chats, spaces, terminals"]
-  emacs --> pimux["pimux<br/>keeps agents running"]
-  pimux --> agents["Pi agents<br/>workers, panels, web, voice"]
+  emacs["Emacs<br/>chats, spaces, terminals"] --> pimux["pimux<br/>keeps agents running"]
+  pimux --> agents["Pi agents<br/>with Phimacs tools"]
   agents --> models["Model providers"]
-  laptop -. "microphone, speaker" .-> agents
 ```
 
-Emacs runs on one computer, the host. pimux runs the agents there, and Emacs
-only shows them. Other computers open Emacs on the host over SSH and can lend
-it their microphone and speaker.
+pimux runs the agents, and Emacs only shows them. You can also open Emacs from
+another computer over SSH; see the [installation guide](docs/install.md#other-devices).
 
 ## License
 

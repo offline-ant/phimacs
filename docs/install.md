@@ -229,7 +229,15 @@ with group/other access and name it; create it with `mkdir -m 700`, under
 `umask 077`, or fix it with `chmod 700`. Bytecode is written next to checkout
 sources, so setup is a build step in the checkout.
 
-Sound, browser tools and the general extension bundle remain separate selections.
+Sound, browser tools and the general extensions are separate selections. Add the
+general extensions (`ask`, `py`, `/tools` and more) and the browser tools with:
+
+```sh
+"$PHIMACS_PI" install "$PWD/packages/extensions"
+"$PHIMACS_PI" install "$PWD/packages/browser"
+```
+
+[Sound](#share-the-devices-microphone-speaker-and-notifications) needs more setup.
 Pi can execute tools and load project resources; review its project-trust prompts.
 Do not turn an unknown project into a trusted installation fixture.
 

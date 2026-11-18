@@ -77,6 +77,13 @@ Nil means ghostel's default shell.")
   "Return FRAME's tabs."
   (funcall tab-bar-tabs-function frame))
 
+(defun pi-deck--select-tab (number)
+  "Select tab NUMBER without Emacs's \"Selected tab\" message.
+Emacs reports every tab switch while the tab bar is hidden, as the
+deck keeps it."
+  (let ((inhibit-message t) (message-log-max nil))
+    (tab-bar-select-tab number)))
+
 (defun pi-deck--tab-group (tab)
   "Return TAB's group (space) name, or nil."
   (alist-get 'group tab))
@@ -227,7 +234,7 @@ layout; an ungrouped current tab (a new frame's first) is reused for it."
     (cond
      (number (unless (equal space (pi-deck-current-space))
                (pi-deck--remember-current-layout)
-               (tab-bar-select-tab number)))
+               (pi-deck--select-tab number)))
      ((null (pi-deck-current-space))
       (pi-deck--set-tab-group space)
       (pi-deck--apply-layout space)

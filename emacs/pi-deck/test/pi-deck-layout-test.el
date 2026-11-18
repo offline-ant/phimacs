@@ -32,8 +32,13 @@
       (should (equal pi-deck--last-space "two"))
       ;; Each space keeps its own layout; leaving one remembers it.
       (split-window-right)
+      (with-current-buffer (messages-buffer)
+        (let ((inhibit-read-only t)) (erase-buffer)))
       (pi-deck-switch-space "one")
       (should (one-window-p))
+      ;; The hidden tab bar does not report the switch in the echo area.
+      (should-not (with-current-buffer (messages-buffer)
+                    (string-search "Selected tab" (buffer-string))))
       (should (equal pi-deck--last-space "one"))
       (should (assoc "two" pi-deck--layouts))
       (pi-deck-switch-space "two")

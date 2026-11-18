@@ -8,7 +8,7 @@ const examples = [
   ["Implement only NEW port/storage/reader.c,h + fixtures/reader_fixture.c", "B] reader.c,h + reader_fixture.c"],
   ["Independent subtask: genuinely investigate the new sidebar", "I] independent sidebar"],
   ["Read-only review of the sidebar", "R] read-only sidebar"],
-  ["Independently review and fix sidebar ordering", "RF] sidebar ordering"],
+  ["Independently review and verify sidebar ordering", "RV] sidebar ordering"],
   ["Final independent review of sidebar", "R] final independent sidebar"],
   ["Final fresh-eyes review of current diff", "R] final fresh-eyes current diff"],
   ["Review for regressions", "R] regressions"],
@@ -22,7 +22,7 @@ const examples = [
   ["You are one of TWO fresh agents testing the sidebar", "fresh agents testing sidebar"],
   ["You own sidebar planning docs", "Own sidebar planning docs"],
   ["Your run was cancelled by timeout. Review the sidebar again.", "R] sidebar again"],
-  ["Your launch failed\nFix sidebar ordering", "F] sidebar ordering"],
+  ["Your launch failed\nFix sidebar ordering", "Fix sidebar ordering"],
   ["Your launch failed transiently", "Your launch failed transiently"],
   ["Review not-only and renewal without changing no-op tests", "R] not-only and renewal without changing no-op tests"],
   ["Investigate do/delegate worker naming", "I] do/delegate worker naming"],
@@ -45,24 +45,22 @@ const examples = [
   ["rEvIeW the sidebar", "R] sidebar"],
   ["IMPLEMENT sidebar folding", "B] sidebar folding"],
   ["INVESTIGATE sidebar ordering", "I] sidebar ordering"],
-  ["fIx sidebar ordering", "F] sidebar ordering"],
   ["vErIfY sidebar ordering", "V] sidebar ordering"],
   ["Review", "R]"],
   ["Review: sidebar", "R] sidebar"],
   ["Implement: sidebar folding", "B] sidebar folding"],
   ["Investigate: sidebar ordering", "I] sidebar ordering"],
-  ["Fix: sidebar ordering", "F] sidebar ordering"],
   ["Verify: sidebar ordering", "V] sidebar ordering"],
   ["Review and implement: sidebar changes", "RB] sidebar changes"],
-  ["Review: & Fix: sidebar changes", "RF] sidebar changes"],
+  ["Review: & Verify: sidebar changes", "RV] sidebar changes"],
   ["Review:sidebar", "Review:sidebar"],
   ["Review:: sidebar", "Review:: sidebar"],
   ["Review.ts: notes", "Review.ts: notes"],
   ["/tmp/Review: sidebar", "Review: sidebar"],
   ["Plan Review: sidebar", "Plan Review: sidebar"],
   ["## **Review** only and _IMPLEMENT_ new src/sidebar.ts", "RB] sidebar.ts"],
-  ["Investigate & fix sidebar ordering", "IF] sidebar ordering"],
-  ["Fix and verify sidebar ordering", "FV] sidebar ordering"],
+  ["Investigate & verify sidebar ordering", "IV] sidebar ordering"],
+  ["Fix and verify sidebar ordering", "Fix and verify sidebar ordering"],
   ["Review and implement reliable backup verification runner", "RB] reliable backup verification runner"],
   ["Review and do not implement sidebar changes", "R] and do not implement sidebar changes"],
   ["Review then implement sidebar changes", "R] then implement sidebar changes"],
@@ -73,7 +71,7 @@ const examples = [
   ["Build: sidebar changes", "B] sidebar changes"],
   ["Implement and build sidebar changes", "BB] sidebar changes"],
   ["Review the actual agreed sidebar changes", "R] sidebar changes"],
-  ["Review and actually fix sidebar ordering", "RF] sidebar ordering"],
+  ["Review and actually verify sidebar ordering", "RV] sidebar ordering"],
   ["Plan Review and Implement work", "Plan Review and Implement work"],
   ["Reviewer and Implementation details", "Reviewer and Implementation details"],
   ["Fixup and Verifyable details", "Fixup and Verifyable details"],
@@ -92,7 +90,7 @@ for (const [task, expected] of examples) {
 }
 
 test("explicit leading action combinations retain their order", () => {
-  const actions = [["Review", "R"], ["Implement", "B"], ["Build", "B"], ["Investigate", "I"], ["Fix", "F"],
+  const actions = [["Review", "R"], ["Implement", "B"], ["Build", "B"], ["Investigate", "I"],
     ["Verify", "V"]] as const;
   for (const [first, firstPrefix] of actions) {
     for (const [second, secondPrefix] of actions) {
@@ -115,8 +113,8 @@ test("worker titles replace actions before truncating at word boundaries within 
   assert.equal(Array.from(title).length, 60);
   assert.equal(title, `${"界".repeat(59)}…`);
   assert.equal(workerTitle("𠮷".repeat(61)), `${"𠮷".repeat(59)}…`);
-  const prefixedUnicode = workerTitle(`Fix ${"𠮷 ".repeat(40)}`);
-  assert.ok(prefixedUnicode.startsWith("F] 𠮷 "));
+  const prefixedUnicode = workerTitle(`Verify ${"𠮷 ".repeat(40)}`);
+  assert.ok(prefixedUnicode.startsWith("V] 𠮷 "));
   assert.ok(prefixedUnicode.endsWith("…"));
   assert.ok(Array.from(prefixedUnicode).length <= 60);
 });
