@@ -341,7 +341,7 @@ line motion and scrolling, so the overlay takes in a closing code fence."
           overlay))))
 
 (defun pilish--terminal-image-after-change (start end _length)
-  "Update terminal images when START..END brought in an image preview."
+  "Schedule a terminal image update for a preview added at START..END."
   (when (text-property-not-all start end 'pilish-image-preview nil)
     (pilish--terminal-image-schedule)))
 

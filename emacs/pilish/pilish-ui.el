@@ -3249,8 +3249,9 @@ BODY-HEIGHT and WINDOW select the geometry used for the count."
         limit)))
 
 (defun pilish--window-bottom-margin (window)
-  "Return the rows at WINDOW's bottom that redisplay keeps point out of.
-The current buffer must be WINDOW's buffer.  This mirrors Emacs's
+  "Return the height in rows of WINDOW's bottom scroll margin.
+Redisplay keeps point out of these rows.  The current buffer must be
+WINDOW's buffer.  This mirrors Emacs's
 `window_scroll_margin': `scroll-margin' clipped to
 `maximum-scroll-margin' of the body height and to less than half of it.
 Redisplay applies the margin at the end of the buffer too."
@@ -3303,7 +3304,7 @@ scrolling, and point is already at the end."
   (setq pilish--command-chat-views nil))
 
 (defun pilish--record-command-chat-views ()
-  "Remember the starts of chat windows and whether they follow the output."
+  "Record each chat window's start and whether it follows the output."
   (pilish--release-command-chat-views)
   (walk-windows
    (lambda (window)

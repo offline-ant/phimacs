@@ -6280,7 +6280,7 @@ It fires after DELAY seconds, by default the render interval."
                      (current-buffer))))
 
 (defun pilish--flush-shown-tool-updates (buffer)
-  "Flush BUFFER's pending tool previews if a window on any frame shows it.
+  "Flush BUFFER's pending tool previews if it is visible on any frame.
 Timer callback for `pilish--tool-update-flush-timer'.  A hidden chat keeps
 its previews pending without a timer; `pilish--paint-held-tool-state'
 schedules their paint when a window shows the chat again."
