@@ -5,9 +5,10 @@
 ;;; Commentary:
 
 ;; Menus opened by mouse: a space's `+' and right-click menus on agents,
-;; closed workers and spaces.  They are ordinary menu keymaps shown with
-;; `popup-menu', which text terminals render as text menus, so everything
-;; works by mouse in TTY and GUI frames alike.
+;; closed workers, spaces, group bands and the sidebar's status summary.
+;; They are ordinary menu keymaps shown with `popup-menu', which text
+;; terminals render as text menus, so everything works by mouse in TTY and
+;; GUI frames alike.
 
 ;;; Code:
 
@@ -15,17 +16,20 @@
 (require 'pi-deck-spaces)
 (require 'pi-deck-close)
 (require 'pi-deck-workers)
+(require 'pi-deck-auto-clear)
+(require 'pi-deck-group-editor)
 
 (declare-function pi-deck-jump "pi-deck-goto" (agent))
 (declare-function pi-deck-answer-dialog "pi-deck-goto" (&optional agent))
 (declare-function pi-deck-show-only "pi-deck-goto" (agent))
 (declare-function pi-deck--current-agent "pi-deck-goto" ())
+(declare-function pi-deck-next-attention "pi-deck-goto" ())
 
 (defun pi-deck--menu (title entries)
   "Return a menu keymap titled TITLE with ENTRIES.
-Each entry is (LABEL FUNCTION) or (LABEL FUNCTION ENABLE); FUNCTION takes
-no arguments.  A nil entry is a separator; entries with ENABLE nil are
-omitted."
+Each entry is (LABEL FUNCTION [ENABLE [BUTTON]]); FUNCTION takes no
+arguments and BUTTON is a menu item's :button, e.g. (:radio . t).
+A nil entry is a separator; entries with ENABLE nil are omitted."
   (let ((menu (make-sparse-keymap title)) (n 0))
     (dolist (entry entries)
       (cl-incf n)
@@ -35,8 +39,19 @@ omitted."
        ((or (< (length entry) 3) (nth 2 entry))
         (let ((function (nth 1 entry)))
           (define-key-after menu (vector (intern (format "item-%d" n)))
-            `(menu-item ,(car entry) ,(lambda () (interactive) (funcall function))))))))
+            `(menu-item ,(car entry) ,(lambda () (interactive) (funcall function))
+                        ,@(when (nth 3 entry) (list :button (nth 3 entry)))))))))
     menu))
+
+(defun pi-deck--auto-clear-entries (current inherited set)
+  "Return the radio entries of an auto-clear override.
+CURRENT is the override (`on', `off' or nil), INHERITED the value used
+without it, and SET a function taking the chosen override."
+  (mapcar (lambda (choice)
+            (list (format "Auto-clear finished: %s"
+                          (or choice (format "inherit (%s)" (if inherited "on" "off"))))
+                  (lambda () (funcall set choice)) t (cons :radio (eq current choice))))
+          '(nil on off)))
 
 (defun pi-deck-popup (menu &optional event)
   "Show MENU at EVENT's position (else the mouse) and run the chosen item."
@@ -54,12 +69,44 @@ omitted."
   "Return the context menu of SPACE."
   (pi-deck--menu
    (format "Space %s" space)
-   (list (list "New agent" (pi-deck--in-space space (lambda () (pi-deck-new-agent nil))))
-         (list "New shell" (pi-deck--in-space space #'pi-deck-new-shell))
-         (list "Reopen agent" (pi-deck--in-space space #'pi-deck-reopen-agent))
-         nil
-         (list "Rename…" (pi-deck--in-space space (lambda () (call-interactively #'pi-deck-rename-space))))
-         (list "Close" (lambda () (pi-deck-close-space space))))))
+   (append
+    (list (list "New agent" (pi-deck--in-space space (lambda () (pi-deck-new-agent nil))))
+          (list "New shell" (pi-deck--in-space space #'pi-deck-new-shell))
+          (list "Reopen agent" (pi-deck--in-space space #'pi-deck-reopen-agent))
+          nil
+          (list "Rename…" (pi-deck--in-space space (lambda () (call-interactively #'pi-deck-rename-space))))
+          (list "Close" (lambda () (pi-deck-close-space space)))
+          nil)
+    (pi-deck--auto-clear-entries
+     (plist-get (pi-deck-space space) :auto-clear)
+     (pi-deck-auto-clear-inherited space)
+     (lambda (value) (pi-deck-set-space-auto-clear space value))))))
+
+;;;; Groups and the status summary
+
+(defun pi-deck-group-menu (group)
+  "Return the context menu of space GROUP."
+  (pi-deck--menu
+   (format "Group %s" group)
+   `(("Rename…" ,(lambda ()
+                   (pi-deck-rename-group
+                    group (read-string (format "Rename group %s to: " group) group))))
+     ("Edit members…" ,(lambda () (pi-deck-edit-group group)))
+     ("Dissolve group" ,(lambda () (pi-deck-dissolve-group group)))
+     nil
+     ,@(pi-deck--auto-clear-entries
+        (alist-get group pi-deck--group-auto-clear nil nil #'equal)
+        pi-deck-auto-clear-finished
+        (lambda (value) (pi-deck-set-group-auto-clear group value))))))
+
+(defun pi-deck-summary-menu ()
+  "Return the context menu of the sidebar's status summary."
+  (pi-deck--menu
+   "Agents"
+   `(("Next agent needing attention" pi-deck-next-attention)
+     nil
+     ("Auto-clear finished workers and shells by default"
+      pi-deck-toggle-auto-clear-finished t (:toggle . ,pi-deck-auto-clear-finished)))))
 
 ;;;; Agents
 

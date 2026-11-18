@@ -39,13 +39,34 @@
 
 (defun pi-deck-edit-group (name)
   "Edit the name and membership of space group NAME."
-  (interactive
-   (list (completing-read "Edit group: "
-                          (delete-dups (delq nil (mapcar (lambda (s) (plist-get s :group))
-                                                         pi-deck-spaces))) nil t)))
-  (unless (and name (seq-find (lambda (s) (equal (plist-get s :group) name)) pi-deck-spaces))
+  (interactive (list (pi-deck--read-group "Edit group: ")))
+  (unless (and name (pi-deck-group-members name))
     (user-error "No such group: %s" name))
   (pi-deck-group-editor--open name))
+
+(defun pi-deck--read-group (prompt)
+  "Read an existing group name with PROMPT."
+  (completing-read prompt (delete-dups (delq nil (mapcar (lambda (s) (plist-get s :group))
+                                                          pi-deck-spaces)))
+                   nil t))
+
+(defun pi-deck-rename-group (group name)
+  "Rename space GROUP to NAME, keeping its members and auto-clear override."
+  (interactive
+   (let ((group (pi-deck--read-group "Rename group: ")))
+     (list group (read-string (format "Rename group %s to: " group) group))))
+  (let ((members (or (pi-deck-group-members group)
+                     (user-error "No such group: %s" group)))
+        (name (pi-deck--group-name name)))
+    (when (and (not (equal name group)) (pi-deck-group-members name))
+      (user-error "A group named %s already exists" name))
+    (pi-deck-set-space-group name members group)))
+
+(defun pi-deck-dissolve-group (group)
+  "Ungroup all members of GROUP without closing their spaces."
+  (interactive (list (pi-deck--read-group "Dissolve group: ")))
+  (pi-deck-set-space-group nil (or (pi-deck-group-members group)
+                                   (user-error "No such group: %s" group))))
 
 (defun pi-deck-group-editor--memberships ()
   "Return the space names and groups shown in the checklist."
@@ -121,9 +142,7 @@
 (defun pi-deck-group-editor--dissolve (&rest _)
   "Ungroup all members of the original group without closing their spaces."
   (pi-deck-group-editor--check-current)
-  (pi-deck-set-space-group nil (cl-loop for s in pi-deck-spaces
-                                       when (equal (plist-get s :group) pi-deck-group-editor--original)
-                                       collect (plist-get s :name)))
+  (pi-deck-dissolve-group pi-deck-group-editor--original)
   (pi-deck-group-editor--quit))
 
 (defun pi-deck-group-editor--quit (&rest _)

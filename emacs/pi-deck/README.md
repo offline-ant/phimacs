@@ -51,17 +51,23 @@ each space's existing group, if any. Cancel leaves everything unchanged.
 A space can belong to one group or stay ungrouped. Groups organize the sidebar
 only: they do not own directories, layouts or agents.
 
-Click a group's name or the blank part of its colored band to fold or unfold
+Each group heading is a full-width band with its own background, also in text
+terminals: a blue-grey tint on dark backgrounds, a pale tint on light ones and
+blue with 8 or 16 colors (face `pi-deck-group-band`).
+Click a group's name or the blank part of its band to fold or unfold
 it. Member spaces keep their usual indentation. Status buttons stay visible
 when folded: in `Lace      ◉ ● 2`, one agent is blocked and two have unseen
-results. Click `● 2` to visit a result directly without unfolding Lace.
+results. The name area and each button highlight separately on hover; the
+single cells between buttons do nothing. Click `● 2` to visit a result
+directly without unfolding Lace.
 Visiting the result clears its done mark; folding and unfolding do not.
 A single result shows just `●`. When space is tight, lower-priority buttons
 drop first; the sidebar header still covers all spaces.
 
-Right-click a band to rename the group, change its members, or **Dissolve group**.
-Dissolving leaves every space open. Membership is saved with the spaces;
-fold state lasts for the session. The same checklist is available with
+Right-click a band for its menu: **Rename…**, **Edit members…** (the
+checklist), **Dissolve group** and the group's [auto-clear](#auto-clear)
+setting. Dissolving leaves every space open. Membership is saved with the
+spaces; fold state lasts for the session. The same checklist is available with
 `M-x pi-deck-new-group` and `M-x pi-deck-edit-group`; Tab moves through it
 and Return activates a button.
 
@@ -72,7 +78,8 @@ The sidebar is shown in frames with room for its width plus
 dragging its edge updates the shared saved width. Preferences never rewrite init.
 
 Its header summarizes blocked, unseen-finished, working and waiting agents; click it for
-next attention. The right-hand `[×]` clears finished workers and exited shells in
+next attention, right-click it for a menu with the default
+[auto-clear](#auto-clear) setting. The right-hand `[×]` clears finished workers and exited shells in
 all spaces, including folded spaces and “other”. Worker session files stay on
 disk; terminal output is discarded. Live shells, waiting/running workers and all
 ordinary or disconnected Pi views are untouched. Cleanup needs no confirmation,
@@ -215,6 +222,24 @@ panels with hidden parents remain listed until revealed. Finished workers retain
 session links; Open transcript is read-only and Resume explicitly opens an
 independent session, returning no result to the old parent. Forgetting a finished
 worker row leaves its session on disk. Closing finished shells loses their output.
+
+### Auto-clear
+
+Auto-clear removes a parent's finished entries once its results are used: when
+the parent's run ends and you have seen it (its status becomes idle, without a
+done mark), deck forgets that parent's finished worker rows and closes its exited
+panels and shells, as `[×]` would. It never touches the parent, live shells, Pi
+views or other agents' children. Children that finish after that moment wait for
+the parent's next seen run end; agents restored or attached already idle wait too.
+A failed close keeps its entry and reports the error.
+
+The setting is off by default. Right-click the sidebar header for the default,
+a group band for its group, or a space for itself. Group and space menus choose
+**inherit** (showing the value it gives), **on** or **off**; the most specific
+choice wins: space, then group, then default. Space choices are saved with the
+spaces, group choices with the deck state (a renamed group keeps its choice; a
+dissolved group drops it) and the default as a preference
+(`pi-deck-auto-clear-finished`).
 
 Close stops the agent everywhere, without confirmation, whether idle, working or
 blocked. Sidebar ✕, title-bar ✕, menu Close and keyboard Close use the same action.

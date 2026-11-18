@@ -571,6 +571,19 @@ MARK is `shown' (highlighted: the frame shows it) or nil."
                 menu)
     (nreverse labels)))
 
+(defun pi-deck-test--menu-item (menu label)
+  "Return the menu-item binding of MENU labelled LABEL."
+  (catch 'found
+    (map-keymap (lambda (_key binding)
+                  (when (and (eq (car-safe binding) 'menu-item) (equal (nth 1 binding) label))
+                    (throw 'found binding)))
+                menu)
+    (ert-fail (format "No menu item %s" label))))
+
+(defun pi-deck-test--menu-command (menu label)
+  "Return the command of MENU's item LABEL."
+  (nth 2 (pi-deck-test--menu-item menu label)))
+
 (defun pi-deck-test--menu-command (menu label)
   "Return the command of the item LABEL in MENU."
   (let (command)
@@ -616,7 +629,8 @@ MARK is `shown' (highlighted: the frame shows it) or nil."
                       (pi-deck-test--menu-labels (pi-deck-agent-menu (pi-deck-agent chat)))))
       (should (equal (pi-deck-test--menu-labels (pi-deck-space-menu "space"))
                      '("New agent" "New shell" "Reopen agent" "--" "Rename…"
-                       "Close")))
+                       "Close" "--" "Auto-clear finished: inherit (off)"
+                       "Auto-clear finished: on" "Auto-clear finished: off")))
       (should (equal (pi-deck-test--menu-labels
                       (pi-deck-finished-worker-menu '(:name "do-1" :session-file "/tmp/x")))
                      '("Open transcript" "Resume")))

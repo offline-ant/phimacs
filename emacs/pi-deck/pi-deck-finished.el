@@ -23,11 +23,24 @@ Failed terminal cleanup retains that entry, reports the error and does not
 prevent clearing the other finished terminals.  Keep the selected window
 when it survives cleanup."
   (interactive)
-  (let ((shells (seq-filter #'pi-deck-agent-finished-shell-p (pi-deck-agents)))
-        (workers (length pi-deck--finished-workers))
-        (closed 0)
-        failures)
+  (let ((workers (length pi-deck--finished-workers)))
     (pi-deck-clear-finished-workers)
+    (pi-deck-close-finished-terminals
+     (seq-filter #'pi-deck-agent-finished-shell-p (pi-deck-agents))
+     (lambda (closed failures)
+       (message "pi-deck: cleared %d finished worker%s and %d shell%s%s"
+                workers (if (= workers 1) "" "s")
+                closed (if (= closed 1) "" "s")
+                (if failures
+                    (format "; %d failed: %s" (length failures)
+                            (string-join failures "; "))
+                  ""))))))
+
+(defun pi-deck-close-finished-terminals (agents callback)
+  "Close those of AGENTS that are still finished terminals, one by one.
+A failed close retains its entry and does not stop the others.  Then call
+CALLBACK with the number closed and the failure descriptions, in order."
+  (let ((closed 0) failures)
     (cl-labels
         ((next (remaining)
            (if-let* ((agent (car remaining)))
@@ -45,14 +58,8 @@ when it survives cleanup."
                           (cl-incf closed))
                         (next (cdr remaining)))))))
              (pi-deck--schedule-update)
-             (message "pi-deck: cleared %d finished worker%s and %d shell%s%s"
-                      workers (if (= workers 1) "" "s")
-                      closed (if (= closed 1) "" "s")
-                      (if failures
-                          (format "; %d failed: %s" (length failures)
-                                  (string-join (nreverse failures) "; "))
-                        "")))))
-      (next shells))))
+             (funcall callback closed (nreverse failures)))))
+      (next agents))))
 
 (defvar-keymap pi-deck-finished--button-map
   :doc "Sidebar header bindings for clearing finished entries."

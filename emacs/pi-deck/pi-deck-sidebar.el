@@ -44,6 +44,8 @@
 (declare-function pi-deck-agent-menu "pi-deck-menus" (agent))
 (declare-function pi-deck-space-menu "pi-deck-menus" (space))
 (declare-function pi-deck-finished-worker-menu "pi-deck-menus" (record))
+(declare-function pi-deck-group-menu "pi-deck-menus" (group))
+(declare-function pi-deck-summary-menu "pi-deck-menus" ())
 (declare-function pi-deck-usage-insert "pi-deck-usage" ())
 (declare-function pi-deck-usage-fetch "pi-deck-usage" ())
 (declare-function pi-deck-usage-toggle-fold "pi-deck-usage" ())
@@ -153,17 +155,20 @@ to a command reading (interactive \"e\")."
 
 (defun pi-deck-sidebar--clickable (string help)
   "Return STRING as a clickable row with HELP shown on hover.
-Buttons in STRING keep their own help."
+Text declaring its own `mouse-face', even nil, keeps its own hover: such
+targets highlight apart from the row.  Inert gaps between targets declare
+a nil `mouse-face' and the `pi-deck-button' `none'.  Other help in STRING
+is kept."
   (let ((end (max 0 (1- (length string))))
         (position 0))
-    (add-text-properties 0 end
-                         (list 'mouse-face 'highlight 'pointer 'hand
-                               'keymap pi-deck-sidebar-row-map)
-                         string)
+    (put-text-property 0 end 'keymap pi-deck-sidebar-row-map string)
     (while (< position end)
-      (let ((next (next-single-property-change position 'help-echo string end)))
-        (unless (get-text-property position 'help-echo string)
-          (put-text-property position next 'help-echo help string))
+      (let ((next (next-property-change position string end))
+            (properties (text-properties-at position string)))
+        (unless (plist-member properties 'mouse-face)
+          (add-text-properties position next '(mouse-face highlight pointer hand) string)
+          (unless (plist-get properties 'help-echo)
+            (put-text-property position next 'help-echo help string)))
         (setq position next))))
   string)
 
@@ -337,7 +342,7 @@ space come last, under \"other\"."
                     group (cl-loop for n in names append (cdr (assoc n homes)))
                     (cl-loop for n in names append (cdr (assoc n runtime-homes)))
                     pi-deck-summary-statuses width folded)
-                   "mouse-1: fold or unfold; mouse-3: edit group")))
+                   nil)))
         (unless folded
           (dolist (name names)
             (pi-deck-sidebar--insert-space name (cdr (assoc name homes)) (cdr (assoc name runtime-homes)))))))
@@ -370,7 +375,14 @@ SHORT leaves out the status names: \"◉ 2 · ● 1\"."
 (defvar-keymap pi-deck-sidebar--summary-map
   :doc "Header line bindings of the sidebar's status summary."
   "<header-line> <down-mouse-1>" #'ignore
-  "<header-line> <mouse-1>" #'pi-deck-next-attention)
+  "<header-line> <mouse-1>" #'pi-deck-next-attention
+  "<header-line> <down-mouse-3>" #'ignore
+  "<header-line> <mouse-3>" #'pi-deck-sidebar-summary-menu)
+
+(defun pi-deck-sidebar-summary-menu (event)
+  "Open the status summary's menu at EVENT."
+  (interactive "e")
+  (pi-deck-popup (pi-deck-summary-menu) event))
 
 (defun pi-deck-sidebar-header ()
   "Return the sidebar's header line: status summary and extra buttons.
@@ -392,7 +404,7 @@ The summary leaves out status names when they would not fit."
     (pi-deck--escape-percent
      (concat " "
              (propertize status 'mouse-face 'mode-line-highlight 'pointer 'hand
-                         'help-echo "mouse-1: next agent needing attention"
+                         'help-echo "mouse-1: next agent needing attention; mouse-3: menu"
                          'local-map pi-deck-sidebar--summary-map)
              (unless (string-empty-p items)
                (concat (propertize " " 'display `(space :align-to (- right ,(1+ (string-width items)))))
@@ -453,16 +465,23 @@ its cursor at the adjacent surviving text."
       (pi-deck-sidebar--top-if-fits window))))
 
 (defun pi-deck-sidebar--footer ()
-  "Return create buttons, stacked only if the sidebar is narrow."
-  (let* ((space (propertize "+ New space" 'face 'link 'pi-deck-action #'pi-deck-create-space
-                            'help-echo "mouse-1: create a space for a project directory"))
-         (group (propertize "+ New Group" 'face 'link 'pi-deck-action #'pi-deck-new-group
-                            'help-echo "mouse-1: group spaces")))
+  "Return create buttons, stacked only if the sidebar is narrow.
+Each button highlights alone; the gap between them is inert."
+  (let* ((link (lambda (label action help)
+                 (propertize label 'face 'link 'pi-deck-action action 'help-echo help
+                             'mouse-face 'highlight 'pointer 'hand)))
+         (space (funcall link "+ New space" #'pi-deck-create-space
+                         "mouse-1: create a space for a project directory"))
+         (group (funcall link "+ New Group" #'pi-deck-new-group "mouse-1: group spaces")))
     (pi-deck-sidebar--clickable
      (concat space (when (cdr pi-deck-spaces)
-                     (concat (if (<= (+ (string-width space) 2 (string-width group))
-                                     (pi-deck-sidebar--width)) "  " "\n") group)) "\n")
-     "")))
+                     (concat (propertize (if (<= (+ (string-width space) 2 (string-width group))
+                                                 (pi-deck-sidebar--width))
+                                             "  " "\n")
+                                         'mouse-face nil 'pi-deck-button 'none)
+                             group))
+             "\n")
+     nil)))
 
 (defun pi-deck-sidebar--top-if-fits (window)
   "Show the sidebar in WINDOW from its first row when all its rows fit.
@@ -524,8 +543,8 @@ worker, show its closed workers or finished shells, or jump to its agent."
      ((get-text-property (point) 'pi-deck-action)
       (call-interactively (get-text-property (point) 'pi-deck-action)))
      ((get-text-property (point) 'pi-deck-group-status)
-      (pi-deck-sidebar--visit-status (get-text-property position 'pi-deck-group)
-                                     (get-text-property (point) 'pi-deck-group-status)))
+      (pi-deck-group-visit-status (get-text-property position 'pi-deck-group)
+                                  (get-text-property (point) 'pi-deck-group-status)))
      ((get-text-property position 'pi-deck-group) (pi-deck-sidebar-toggle-fold))
      ((get-text-property position 'pi-deck-action) nil)
      ((get-text-property position 'pi-deck-worker-record)
@@ -539,22 +558,6 @@ worker, show its closed workers or finished shells, or jump to its agent."
      ((get-text-property position 'pi-deck-available)
       (pi-deck-attach-available (get-text-property position 'pi-deck-available)))
      (t (pi-deck-jump (pi-deck-sidebar--agent-at-point))))))
-
-(defun pi-deck-sidebar--visit-status (group status)
-  "Visit a matching agent in GROUP, or explicitly attach a matching runtime.
-Prefer the newest tracked match.  Resolve STATUS again at click time."
-  (let* ((homes (cl-loop for space in pi-deck-spaces when (equal group (plist-get space :group))
-                         collect (plist-get space :name)))
-         (index (pi-deck-tab-index))
-         (agents (cl-loop for a in (pi-deck-agents)
-                          when (and (eq (pi-deck-agent-status a) status)
-                                    (member (pi-deck-agent-space a index) homes)) collect a)))
-    (if agents (pi-deck-jump (car (sort agents :key #'pi-deck-agent-changed :lessp #'>)))
-      (if-let* ((runtime (seq-find (lambda (r) (and (pi-deck-group-runtime-status-p r status)
-                                                    (member (pi-deck-available-space r) homes)))
-                                   (reverse (pi-deck-available-runtimes)))))
-          (pi-deck-attach-available runtime)
-        (message "No %s target in %s" status group)))))
 
 (defun pi-deck-sidebar--clear-workers (parent)
   "Clear the closed workers listed under PARENT's buffer."
@@ -589,9 +592,10 @@ Buttons leave the selected window alone; lines act like \\[pi-deck-sidebar-jump]
           ('space-menu (pi-deck-popup (pi-deck-space-menu (get-text-property row 'pi-deck-space))
                                       event))
           ('usage-fetch (pi-deck-usage-fetch))
+          ('none nil)
           ((guard (get-text-property position 'pi-deck-group-status))
-           (pi-deck-sidebar--visit-status (get-text-property row 'pi-deck-group)
-                                          (get-text-property position 'pi-deck-group-status)))
+           (pi-deck-group-visit-status (get-text-property row 'pi-deck-group)
+                                       (get-text-property position 'pi-deck-group-status)))
           ((guard (get-text-property row 'pi-deck-group))
            (save-excursion (goto-char row) (pi-deck-sidebar-toggle-fold)))
           ((guard (get-text-property position 'pi-deck-action))
@@ -628,7 +632,7 @@ The first click already jumped to it; buttons ignore double clicks."
                        (space (get-text-property position 'pi-deck-space))
                        (record (get-text-property position 'pi-deck-worker-record)))
                    (cond ((get-text-property position 'pi-deck-group)
-                          (pi-deck-edit-group (get-text-property position 'pi-deck-group)) nil)
+                          (pi-deck-group-menu (get-text-property position 'pi-deck-group)))
                          (agent (pi-deck-agent-menu agent))
                          ((and space (pi-deck-space space)) (pi-deck-space-menu space))
                          (record (pi-deck-finished-worker-menu record)))))))
@@ -901,7 +905,8 @@ sidebar."
 
 ;;;; Preferences
 
-(defconst pi-deck-preference-variables '(pi-deck-sidebar pi-deck-sidebar-width)
+(defconst pi-deck-preference-variables
+  '(pi-deck-sidebar pi-deck-sidebar-width pi-deck-auto-clear-finished)
   "Variables commands save to `pi-deck-preferences-file'.")
 
 (defun pi-deck--read-preferences ()

@@ -2,6 +2,29 @@
 ;; SPDX-License-Identifier: MIT
 
 (require 'pi-deck-sidebar-test)
+(require 'pi-deck-ui-test)
+
+(ert-deftest pi-deck-group-sidebar-band-has-its-own-background ()
+  ;; Themes such as dracula give `mode-line-inactive' the default background
+  ;; and a box that text terminals do not draw; the band must not rely on it.
+  (let ((frame (selected-frame))
+        (mode (frame-parameter nil 'background-mode))
+        (type (frame-parameter nil 'display-type))
+        (spec (face-default-spec 'pi-deck-group-band)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'display-color-cells) (lambda (&rest _) 256)))
+          (set-frame-parameter nil 'background-mode 'dark)
+          (set-frame-parameter nil 'display-type 'color)
+          (let ((band (face-spec-choose spec frame)))
+            (should (stringp (plist-get band :background)))
+            (should-not (equal (plist-get band :background)
+                               (face-background 'default frame t)))
+            (should-not (plist-get band :inherit))
+            (should (plist-get band :extend)))
+          (cl-letf (((symbol-function 'display-color-cells) (lambda (&rest _) 16)))
+            (should (equal (plist-get (face-spec-choose spec frame) :background) "blue"))))
+      (set-frame-parameter nil 'background-mode mode)
+      (set-frame-parameter nil 'display-type type))))
 
 (ert-deftest pi-deck-group-sidebar-cell-budget ()
   (let ((agents (list (pi-deck-agent--make :state 'blocked)
@@ -15,10 +38,18 @@
         (should (equal (get-text-property 0 'pi-deck-group band) "東京-Lace"))
         (when (= width 26)
           (should (string-suffix-p "◉ ● 2 ◐" band))
-          ;; The leading cell, glyph, internal space and count are one target.
+          ;; The glyph, internal space and count are one target; the cell
+          ;; before it is an inert gap that never highlights.
           (let ((start (string-search " ●" band)))
-            (dotimes (n 4)
-              (should (eq (get-text-property (+ start n) 'pi-deck-group-status band) 'done)))))
+            (should-not (get-text-property start 'pi-deck-group-status band))
+            (should (plist-member (text-properties-at start band) 'mouse-face))
+            (should-not (get-text-property start 'mouse-face band))
+            (dotimes (n 3)
+              (should (eq (get-text-property (+ start 1 n) 'pi-deck-group-status band) 'done))
+              (should (eq (get-text-property (+ start 1 n) 'mouse-face band) 'highlight)))
+            ;; Targets highlight apart: the name area's run ends at the gap.
+            (should (= (next-single-property-change 0 'mouse-face band)
+                       (string-search " ◉" band)))))
         (when (= width 3) (should (string-suffix-p " ◉" band)))))))
 
 (ert-deftest pi-deck-group-sidebar-interleaved-fold-jump-and-edit ()
@@ -61,8 +92,16 @@
               ;; An unseen result can change even before the next redraw.
               (pi-deck-sidebar-mouse-1 (funcall click badge))
               (should (eq visited sibling))
-              (pi-deck-sidebar-mouse-3 (funcall click badge))
-              (should (equal edited "Lace")))))))))
+              (let (popped)
+                (cl-letf (((symbol-function 'pi-deck-popup) (lambda (menu &rest _) (setq popped menu))))
+                  (pi-deck-sidebar-mouse-3 (funcall click badge)))
+                (should (equal (pi-deck-test--menu-labels popped)
+                               '("Rename…" "Edit members…" "Dissolve group" "--"
+                                 "Auto-clear finished: inherit (off)"
+                                 "Auto-clear finished: on" "Auto-clear finished: off")))
+                (should-not edited)
+                (funcall (pi-deck-test--menu-command popped "Edit members…"))
+                (should (equal edited "Lace"))))))))))
 
 (ert-deftest pi-deck-group-sidebar-cycle-interleaved-members ()
   (pi-deck-sidebar-test--with-view
@@ -139,12 +178,15 @@
                  (click (lambda (pos) (pi-deck-sidebar-mouse-1
                                        (list 'mouse-1 (list sidebar pos '(0 . 0) 0))))))
             (should-not target)
-            (funcall click (1- badge)) ; preceding blank cell is clickable
+            (funcall click (1- badge)) ; the preceding gap is inert
+            (should-not target)
+            (should (equal pi-deck-sidebar--collapsed-groups '("G")))
+            (funcall click badge)
             (should (eq target tracked))
             (setf (pi-deck-agent-state tracked) 'idle)
-            (funcall click (1- badge))
+            (funcall click badge)
             (should (eq target blocked))
-            (funcall click (1- run))
+            (funcall click run)
             (should (eq target working))
             ;; A stale badge cannot attach an idle runtime or one outside the group.
             (setq snapshot (list idle outside) target nil)
@@ -162,6 +204,16 @@
         (push '(:name "second") pi-deck-spaces)
         (pi-deck-sidebar-refresh)
         (should (string-suffix-p "+ New space  + New Group\n" (buffer-string)))
+        ;; Each button highlights alone; the gap between them is inert.
+        (goto-char (point-max))
+        (let ((space (search-backward "+ New space")))
+          (should (eq (get-text-property space 'mouse-face) 'highlight))
+          (should (= (next-single-property-change space 'mouse-face) (+ space 11)))
+          (should (plist-member (text-properties-at (+ space 11)) 'mouse-face))
+          (should-not (get-text-property (+ space 12) 'mouse-face))
+          (should (eq (get-text-property (+ space 13) 'mouse-face) 'highlight))
+          (pi-deck-sidebar-mouse-1 (list 'mouse-1 (list sidebar (+ space 12) '(0 . 0) 0)))
+          (should (eq (selected-window) main)))
         (cl-letf (((symbol-function 'pi-deck-new-group) (lambda () (interactive) (setq called 'group)))
                   ((symbol-function 'pi-deck-create-space) (lambda () (interactive) (setq called 'space))))
           (dolist (entry '(("space" . space) ("Group" . group)))
