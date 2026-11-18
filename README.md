@@ -1,121 +1,121 @@
 # Phimacs
 
-![Phimacs demo](docs/demo/phimacs.gif)
+Run [Pi](https://github.com/earendil-works/pi-mono) coding agents inside Emacs.
+Your agents keep running when you close Emacs, and you can connect to them
+again from another computer.
+
+[![Phimacs demo](docs/demo/phimacs.gif)](docs/demo/README.md)
+
+## What you get
+
+- **Chats and project spaces in Emacs.** Each project has its own space with its
+  own window layout. A sidebar lists all agents and shows which ones need you.
+- **Agents that keep running.** A background service, pimux, runs the agents.
+  Closing Emacs or losing an SSH connection does not stop them. Only the Close
+  command stops an agent.
+- **Workers.** An agent can give a task to a helper agent, a "worker", also on
+  another model, and get the result back.
+- **Terminal panels.** Agents can run servers and other long commands in
+  terminals that you can see and use too.
+- **Other computers.** Run `phimacs` on a laptop to open the same agents over
+  SSH. The laptop can also lend its microphone and speaker to the agents.
+- **Optional tools** for web browsing and search, dictation and speech.
 
 > **Why this exists:** Phimacs brings together tools that I wrote over the past
 > year for my own work with Pi agents. For a long time I used
-> [Herdr](https://herdr.dev). When Emacs turned 50, I went back to Emacs and
-> rebuilt the Herdr features that I use as Emacs packages. I
+> [Herdr](https://herdr.dev), a terminal workspace for coding agents. When Emacs
+> turned 50, I went back to Emacs and rebuilt, as Emacs packages, the Herdr
+> features that I use. I
 > [mentioned this on Hacker News](https://news.ycombinator.com/item?id=50298436#50300314),
 > and people asked me to publish it. So I put my setup into this one repository,
 > to make it easy to try.
 
-Phimacs runs [Pi](https://github.com/earendil-works/pi-mono) coding agents in
-Emacs. You chat with agents in Pilish and keep each project in its own pi-deck
-space. A background service, pimux, keeps every agent running, also when Emacs
-is closed.
+## Status
+
+Early: version 0.1.0. I use it every day, but expect rough edges. It runs on
+Linux only and is tested with Pi 1.5.2. Use the `main` branch.
+
+## Get started
+
+**With a coding agent:** point it at the [installation guide](docs/install.md).
+
+### Complete Emacs setup
+
+You need Linux, Git, a C compiler, Node 24 or newer, and Emacs 31.1 or newer
+built with tree-sitter and module support.
+
+```sh
+npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.2  # if you do not have Pi
+git clone https://github.com/offline-ant/phimacs
+cd phimacs
+npm ci --ignore-scripts
+npm run compile
+ln -s "$PWD/bin/phimacs" ~/.local/bin/phimacs
+pi                # log in with /login, choose a model with /model, then exit
+phimacs setup     # once: installs Emacs packages and compiled helpers
+phimacs           # opens Emacs in this terminal; add --gui for a window
+```
+
+Phimacs uses its own Emacs daemon and does not change `~/.emacs.d`. The
+[installation guide](docs/install.md) explains each step and how to connect
+from other computers.
+
+### Your own Emacs configuration
+
+Install only the packages that you want with `use-package :vc`. You do not need
+the theme, completion or keys of the complete setup. See
+[existing Emacs configuration](docs/install.md#existing-emacs-configuration).
+
+### Plain pi in Herdr or tmux, without Emacs
+
+You get workers, terminal panels and the general tools, for example `ask` and
+`py`. You need Linux, Git, Node 24 or newer, and Pi 1.5.2:
+
+```sh
+npm install --global --ignore-scripts @earendil-works/pi-coding-agent@1.5.2  # if you do not have Pi
+git clone https://github.com/offline-ant/phimacs
+phimacs/bin/phimacs setup pi      # add --browser or --sound for those tools
+pi
+```
+
+See [Pi in Herdr or tmux](docs/install.md#pi-in-herdr-or-tmux-without-emacs) for
+options, updates and how to move from the older `pi-ant` or `pi-browser`
+packages.
 
 ## How the parts fit together
 
 ```mermaid
-flowchart TB
-  subgraph device["Other device (optional)"]
-    client["phimacs client"]
-    hw["microphone · speaker · notifications"]
-  end
-  subgraph host["Host machine"]
-    subgraph fronts["Frontends"]
-      emacs["Emacs profile<br/>Pilish chat · pi-deck spaces · Ghostel terminals"]
-      tui["Plain pi<br/>in Herdr or tmux"]
-    end
-    pimux["pimux service<br/>keeps every agent running"]
-    subgraph agent["Pi agent with Phimacs packages"]
-      orch["orchestration<br/>do · microdo · delegate · panels · wait"]
-      ext["extensions<br/>ask · py · /tools · safety lints · skills"]
-      browser["browser (optional)<br/>browser · web_search · web_fetch · web_read"]
-      sound["sound (optional)<br/>dictation · speech · notifications"]
-    end
-  end
-  models["Model providers"]
-  client -- SSH --> emacs
-  hw -. shared over SSH .-> sound
-  emacs -- private Unix sockets --> pimux
-  pimux --> agent
-  tui --> agent
-  agent --> models
+flowchart LR
+  laptop["Other computer<br/>phimacs over SSH"] --> emacs["Emacs<br/>chats, spaces, terminals"]
+  emacs --> pimux["pimux<br/>keeps agents running"]
+  pimux --> agents["Pi agents<br/>with Phimacs tools"]
+  tui["Plain pi in Herdr or tmux<br/>stops with its terminal"] --> agents
+  agents --> models["Model providers"]
 ```
 
-- **pimux** starts and keeps the Pi agents and their workers. Emacs only shows
-  them. When Emacs closes, the agents continue. Only an explicit Close stops an
-  agent.
-- **Frontends:** the Emacs profile shows chats, project spaces, a sidebar and
-  terminals. You can also use plain `pi` in Herdr or tmux, without Emacs.
-- **Packages** add tools to each agent. The Emacs profile turns on
-  orchestration (workers and terminal panels) by default. The general
-  extensions, browser tools and sound are separate choices.
-- **Other devices** run a small `phimacs` client over SSH. They can also lend
-  their microphone, speaker and notifications to the host.
+In Emacs, pimux runs the agents and Emacs only shows them. Plain `pi` in Herdr or
+tmux needs no pimux, so its agent stops when you close its terminal.
 
-The [architecture](docs/architecture.md) page has more detail.
+## License
 
-## Three ways to use it
-
-- **Keep your Emacs configuration.** Install only the packages that you want
-  with `use-package :vc`. You do not need the profile's theme, completion or
-  keys.
-- **Try the complete profile.** Run `phimacs`. It starts the pimux service and
-  its own Emacs daemon, or connects to them, and opens a terminal frame. Use
-  `--gui` for a graphical frame. The profile does not change `~/.emacs.d`.
-- **Use plain `pi` in Herdr or tmux, without Emacs.** You get workers, panels
-  and the general extensions. You need Node 24 or newer and Pi on your PATH:
-
-  ```sh
-  git clone https://github.com/offline-ant/phimacs
-  phimacs/bin/phimacs setup pi
-  pi
-  ```
-
-  Read [Pi in Herdr or tmux](docs/install.md#pi-in-herdr-or-tmux-without-emacs)
-  for options, updates and how to move from `pi-ant` or `pi-browser`.
-
-For the complete profile, follow the [installation guide](docs/install.md):
-
-1. Clone and compile.
-2. Log in to a model provider.
-3. Run `phimacs setup` once. It installs the pinned packages and native parts.
-4. Run `phimacs`. Normal startup installs nothing.
-
-The [runtime lifecycle](docs/lifecycle.md) explains what happens when you close
-Emacs, lose a connection or close an agent.
-
-## Requirements
-
-The complete profile needs:
-
-- Linux
-- Node 24 or newer
-- Emacs 31.1 or newer, with tree-sitter and native modules
-- Pi 1.5.2 (the tested version)
-
-Plain `pi` in Herdr or tmux needs only Linux, Git, Node and Pi. Checks pass on
-Emacs 31.1 and 32.0.50. The
-[development guide](docs/development.md#emacs-build-selection-and-qualification)
-lists the test lanes.
-
-## What is in this repository
-
-This one repository has the maintained Pilish fork, the reusable packages and
-the optional profile. Pilish stays GPL-3.0-or-later. Other code and assets keep
-their own licenses. Private providers, account and device settings, credentials
-and personal settings are not part of Phimacs.
+Phimacs's own code is MIT. The Pilish chat package in `emacs/pilish/` is a fork
+of [Pilish](https://github.com/dnouri/pilish) and stays GPL-3.0-or-later.
+Third-party files keep their own licenses; see
+[third-party sources](provenance/README.md). Phimacs does not include my private
+model providers, accounts, credentials or personal settings.
 
 ## Documentation
 
+Using Phimacs:
+
 - [Installation](docs/install.md)
-- [Architecture](docs/architecture.md)
-- [Runtime lifecycle](docs/lifecycle.md)
-- [Runtime protocol](docs/runtime-contract.md)
+- [Runtime lifecycle](docs/lifecycle.md): what keeps running and what stops
+- [Demo](docs/demo/README.md)
+
+Contributing:
+
 - [Development and focused checks](docs/development.md)
+- [Architecture](docs/architecture.md)
+- [Runtime protocol](docs/runtime-contract.md)
 - [Pilish upstream maintenance](docs/pilish-upstream.md)
 - [Dependency security](docs/dependency-security.md)
-- [Third-party sources and licensing](provenance/README.md)
