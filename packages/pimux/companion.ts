@@ -9,6 +9,7 @@
  */
 import * as fs from "node:fs";
 import { installManagedSessionGuard } from "./guard.ts";
+import { installModelControl } from "./model-control.ts";
 import { processIdentityStatus, readProcessIdentity, type ProcessIdentity } from "./process-identity.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
@@ -92,6 +93,8 @@ export default function pimuxCompanion(pi: ExtensionAPI): void {
   const send = (ctx: ExtensionContext, record: CompanionRecord): void => {
     ctx.ui.setStatus(COMPANION_STATUS_KEY, JSON.stringify(record));
   };
+
+  installModelControl(pi, send);
 
   /**
    * Must stay synchronous: its position in Pi's stdout is the snapshot boundary.

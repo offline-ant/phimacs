@@ -54,6 +54,18 @@
            (with-current-buffer buffer (setq pilish--process nil))
            (kill-buffer buffer))))))
 
+(defmacro pilish-command-context-test--with-picker-dispatch (callback &rest body)
+  "Capture the zero-time picker in CALLBACK; execute it only after BODY."
+  (declare (indent 1))
+  `(let (,callback)
+     (cl-letf (((symbol-function 'run-at-time)
+                (lambda (seconds repeat function &rest arguments)
+                  (should (equal seconds 0))
+                  (should-not repeat)
+                  (setq ,callback (lambda () (apply function arguments))))))
+       ,@body)
+     (when ,callback (funcall ,callback))))
+
 (ert-deftest pilish-command-context-test-transition-captures-before-confirmation ()
   (pilish-command-context-test--with-view
     (let (sent)
@@ -66,20 +78,18 @@
       (should (equal (plist-get sent :pimuxContext) pilish-command-context-test--a))
       (should (equal (plist-get sent :type) "new_session")))))
 
-(ert-deftest pilish-command-context-test-model-picker-retains-pre-getter-context ()
+(ert-deftest pilish-command-context-test-model-picker-refuses-stale-discovery ()
   (pilish-command-context-test--with-view
-    (let (sent)
-      (cl-letf (((symbol-function 'pilish--rpc-sync)
-                 (lambda (&rest _)
-                   (process-put proc 'pilish-input-context pilish-command-context-test--b)
-                   '(:success t :data (:models [(:id "model" :name "Model" :provider "fake")]))))
-                ((symbol-function 'completing-read) (lambda (&rest _) "Model [fake]"))
-                ((symbol-function 'pilish--begin-model-change) (lambda (&rest _) 'request))
-                ((symbol-function 'pilish--rpc-async)
-                 (lambda (_ command _callback) (setq sent command))))
-        (pilish-select-model))
-      (should (equal (plist-get sent :type) "set_model"))
-      (should (equal (plist-get sent :pimuxContext) pilish-command-context-test--a)))))
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply requests)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command callback) (push command requests) (setq reply callback)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) (ert-fail "Stale model catalog opened a selector"))))
+        (pilish-select-model)
+        (process-put proc 'pilish-input-context pilish-command-context-test--b)
+        (funcall reply '(:success t :data (:models [(:id "model" :name "Model" :provider "fake")]))))
+      (should (equal requests '((:type "pimux_models" :action "list")))))))
 
 (ert-deftest pilish-command-context-test-thinking-picker-retains-pre-getter-context ()
   (pilish-command-context-test--with-view
@@ -163,7 +173,7 @@
 
 (ert-deftest pilish-command-context-test-close-cannot-accept-a-replacement-receipt ()
   (pilish-command-context-test--with-view
-    (setq pilish--runtime '(:protocol 2 :mux-id "old-runtime" :state "live"))
+    (setq pilish--runtime '(:protocol 2 :mux-id "old-runtime" :state "live" :placement "root"))
     (let (outcome)
       (cl-letf (((symbol-function 'yes-or-no-p)
                  (lambda (_) (ert-fail "Close yielded to a confirmation")))
@@ -309,6 +319,197 @@
                 ((symbol-function 'pilish--prepare-and-send) (lambda (text) (setq sent text))))
         (pilish--run-custom-command '(:name "native")))
       (should (equal sent "/native native args")))))
+
+(ert-deftest pilish-command-context-test-model-picker-discovers-asynchronously-and-selects-exact-provider ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply requests model-reply)
+      (cl-letf (((symbol-function 'pilish--rpc-sync)
+                 (lambda (&rest _) (ert-fail "Managed model discovery blocked Emacs")))
+                ((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command callback)
+                   (push command requests)
+                   (if (equal (plist-get command :action) "list")
+                       (setq reply callback)
+                     (setq model-reply callback))))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) (ert-fail "Exact provider/model opened a selector"))))
+        (pilish-select-model "openai/gpt-6.2-sol")
+        (should (equal requests '((:type "pimux_models" :action "list"))))
+        (pilish-command-context-test--with-picker-dispatch deferred
+          (with-temp-buffer
+            (funcall reply '(:success t :data (:models
+                                             [(:id "gpt-6.2-sol" :name "Sol 6.2" :provider "openrouter")
+                                              (:id "gpt-6.2-sol" :name "Sol 6.2" :provider "openai")])))))
+        (should (equal (car requests)
+                       (list :type "pimux_models" :action "set" :provider "openai"
+                             :modelId "gpt-6.2-sol" :pimuxContext pilish-command-context-test--a)))
+        (should (pilish--model-change-pending-p chat))
+        (funcall model-reply '(:success t :data (:model (:id "gpt-6.2-sol" :provider "openai")
+                                                       :thinkingLevel "high")))
+        (should-not (pilish--model-change-pending-p chat))
+        (should (= (length requests) 2))
+        (should (equal (with-current-buffer input (buffer-string)) "original draft"))))))
+
+(ert-deftest pilish-command-context-test-model-picker-prefix-forces-live-refresh ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let ((current-prefix-arg '(4)) sent)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command _callback) (setq sent command))))
+        (call-interactively #'pilish-select-model))
+      (should (equal sent '(:type "pimux_models" :action "list" :force t))))))
+
+(ert-deftest pilish-command-context-test-model-picker-refuses-old-capability-without-input ()
+  (pilish-command-context-test--with-view
+    (cl-letf (((symbol-function 'pilish--rpc-async)
+               (lambda (&rest _) (ert-fail "Unsupported runtime received model input"))))
+      (should-error (pilish-select-model) :type 'user-error))))
+
+(ert-deftest pilish-command-context-test-model-picker-reports-refresh-failure-without-selection ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply messages)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ _command callback) (setq reply callback)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) (ert-fail "Failed catalog opened a selector")))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) messages))))
+        (pilish-select-model)
+        (funcall reply '(:success :false :error (:code "refresh_failed" :message "Faux catalog failed"))))
+      (should (string-match-p "Faux catalog failed" (car messages)))
+      (should-not (pilish--model-change-pending-p chat)))))
+
+(ert-deftest pilish-command-context-test-model-picker-retains-context-through-minibuffer ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply requests)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command callback) (push command requests) (setq reply callback)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _)
+                   (process-put proc 'pilish-input-context pilish-command-context-test--b)
+                   "Model [fake]")))
+        (pilish-select-model)
+        (pilish-command-context-test--with-picker-dispatch deferred
+          (funcall reply '(:success t :data (:models [(:id "model" :name "Model" :provider "fake")])))))
+      (should (= (length requests) 1))
+      (should-not (pilish--model-change-pending-p chat)))))
+
+(ert-deftest pilish-command-context-test-model-picker-refuses-replaced-session-generation ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply requests)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command callback) (push command requests) (setq reply callback)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) (ert-fail "Superseded model selector opened"))))
+        (pilish-select-model)
+        (cl-incf pilish--session-transition-generation)
+        (funcall reply '(:success t :data (:models [(:id "model" :name "Model" :provider "fake")]))))
+      (should (= (length requests) 1)))))
+
+(ert-deftest pilish-command-context-test-model-switch-failure-settles-without-prompt ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply model-reply requests messages)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command callback)
+                   (push command requests)
+                   (if (equal (plist-get command :action) "list")
+                       (setq reply callback)
+                     (setq model-reply callback))))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) messages))))
+        (pilish-select-model "fake/model")
+        (pilish-command-context-test--with-picker-dispatch deferred
+          (funcall reply '(:success t :data (:models [(:id "model" :name "Model" :provider "fake")]))))
+        (funcall model-reply '(:success :false :error (:code "model_unavailable" :message "Faux model unavailable"))))
+      (should (string-match-p "Faux model unavailable" (car messages)))
+      (should-not (pilish--model-change-pending-p chat))
+      (should (cl-every (lambda (command) (equal (plist-get command :type) "pimux_models")) requests))
+      (should (equal (with-current-buffer input (buffer-string)) "original draft")))))
+
+(ert-deftest pilish-command-context-test-model-picker-correlates-control-over-core-transport ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (wire)
+      (cl-letf (((symbol-function 'pilish--send-string)
+                 (lambda (_ text)
+                   (push (json-parse-string text :object-type 'plist) wire))))
+        (pilish-select-model "openai/gpt-6.2-sol")
+        (let ((request (car wire)))
+          (should (equal (plist-get request :type) "pimux_models"))
+          (should (equal (plist-get request :action) "list"))
+          (pilish-command-context-test--with-picker-dispatch deferred
+            (pilish--dispatch-response
+             proc (list :type "response" :id (plist-get request :id) :command "pimux_models"
+                        :success t :data '(:models [(:id "gpt-6.2-sol" :name "Sol 6.2" :provider "openai")])))))
+        (let ((request (car wire)))
+          (should (equal (plist-get request :action) "set"))
+          (should (equal (plist-get request :provider) "openai"))
+          (should (equal (plist-get request :modelId) "gpt-6.2-sol"))
+          (should (equal (plist-get request :pimuxContext) pilish-command-context-test--a))
+          (pilish--dispatch-response
+           proc (list :type "response" :id (plist-get request :id) :command "pimux_models"
+                      :success t :data '(:model (:id "gpt-6.2-sol" :provider "openai") :thinkingLevel "high"))))
+        (should (= (length wire) 2))
+        (should (= (hash-table-count (pilish--get-pending-requests proc)) 0))
+        (should-not (pilish--model-change-pending-p chat))
+        (should (equal (with-current-buffer input (buffer-string)) "original draft"))))))
+
+(ert-deftest pilish-command-context-test-model-picker-defers-completion-outside-response ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply requests selected)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command callback) (push command requests) (setq reply callback)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) (setq selected t) "Model [fake]")))
+        (pilish-select-model)
+        (pilish-command-context-test--with-picker-dispatch deferred
+          (funcall reply '(:success t :data (:models [(:id "model" :name "Model" :provider "fake")])))
+          (should (functionp deferred))
+          (should-not selected)
+          (should (= (length requests) 1)))
+        (should selected)
+        (should (equal (plist-get (car requests) :action) "set"))))))
+
+(ert-deftest pilish-command-context-test-model-picker-rechecks-context-after-deferral ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply requests messages)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command callback) (push command requests) (setq reply callback)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) (ert-fail "Deferred picker ignored changed context")))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) messages))))
+        (pilish-select-model)
+        (pilish-command-context-test--with-picker-dispatch deferred
+          (funcall reply '(:success t :data (:models [(:id "model" :name "Model" :provider "fake")])))
+          (should (functionp deferred))
+          (process-put proc 'pilish-input-context pilish-command-context-test--b)))
+      (should (string-match-p "changed before model selection" (car messages)))
+      (should (= (length requests) 1)))))
+
+(ert-deftest pilish-command-context-test-model-picker-does-not-steal-active-minibuffer ()
+  (pilish-command-context-test--with-view
+    (process-put proc 'pilish-mux '(:protocol 2 :capabilities ["models"]))
+    (let (reply requests messages)
+      (cl-letf (((symbol-function 'pilish--rpc-async)
+                 (lambda (_ command callback) (push command requests) (setq reply callback)))
+                ((symbol-function 'completing-read)
+                 (lambda (&rest _) (ert-fail "Model picker stole the active minibuffer")))
+                ((symbol-function 'active-minibuffer-window) (lambda () (selected-window)))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (push (apply #'format format args) messages))))
+        (pilish-select-model)
+        (pilish-command-context-test--with-picker-dispatch deferred
+          (funcall reply '(:success t :data (:models [(:id "model" :name "Model" :provider "fake")])))))
+      (should (string-match-p "Minibuffer is active" (car messages)))
+      (should (= (length requests) 1)))))
 
 (provide 'pilish-command-context-test)
 ;;; pilish-command-context-test.el ends here

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import * as net from "node:net";
 import { LineSplitter } from "./jsonl.ts";
 import { canonicalSessionPath } from "./ownership.ts";
-import { isReadOnlyCommand, isRecord, parseInputContext, PROTOCOL_VERSION, type InputContext, type JsonRecord } from "./protocol.ts";
+import { isReadOnlyRequest, isRecord, parseInputContext, PROTOCOL_VERSION, type InputContext, type JsonRecord } from "./protocol.ts";
 import { lookupRuntime, validateSocket, type RuntimeReceipt } from "./runtime.ts";
 import { processIdentityStatus, type ProcessIdentity } from "./process-identity.ts";
 
@@ -50,6 +50,11 @@ export async function runtimeRequest(runtime: RuntimeReceipt, request: JsonRecor
           || !record.capabilities.includes("contextual-input")) {
           finish(new Error("Runtime identity/protocol mismatch")); return;
         }
+        if (request.type === "pimux_models" && !record.capabilities.includes("models")) {
+          finish(undefined, { type: "response", command: "pimux_models", success: false,
+            error: { code: "unsupported_operation", message: "This runtime does not support live model control; it was not restarted or sent input" } });
+          return;
+        }
         hello = true;
       } else if (record.type === "pimux_snapshot") {
         try {
@@ -64,7 +69,7 @@ export async function runtimeRequest(runtime: RuntimeReceipt, request: JsonRecor
           generation = record.generation;
         } catch (error) { finish(error instanceof Error ? error : new Error(String(error))); }
       } else if (record.type === "pimux_live" && record.generation === generation && generation !== undefined && !sent) {
-        const mutates = typeof request.type !== "string" || !isReadOnlyCommand(request.type);
+        const mutates = !isReadOnlyRequest(request);
         if (mutates && !inputContext) {
           finish(new Error("Runtime snapshot has no usable input context")); return;
         }

@@ -306,8 +306,11 @@ exceptions.
 
 The header line shows the model, thinking level, activity, cost,
 context usage, session name, and any extension status or attached image.
-Click the model or thinking level to change it.  The =queued N= count
-shows known pending messages.  See [[file:#prompt-queues][the queue reference]] for its limits.
+Click the model or thinking level to change it.  Managed model selection
+refreshes the catalog asynchronously; =C-u C-c C-m= forces a refresh.
+See [[file:MENU-RUNTIME.md][the model-selection contract]] for owner capabilities and the unshared
+RPC refresh limitation.  The =queued N= count shows known pending messages.
+See [[file:#prompt-queues][the queue reference]] for its limits.
 
 The chat renders Markdown with syntax highlighting for code, file
 operations, and edit diffs.  Commands stream their output live, and

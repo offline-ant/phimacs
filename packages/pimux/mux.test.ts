@@ -3,7 +3,7 @@ import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Sink } from "./client.ts";
 import { Mux, type MuxOptions } from "./mux.ts";
-import { COMPANION_STATUS_KEY, type CompanionRecord, type JsonRecord, SNAPSHOT_COMMAND, type SnapshotData } from "./protocol.ts";
+import { COMPANION_STATUS_KEY, type CompanionRecord, type JsonRecord, MODELS_COMMAND, SNAPSHOT_COMMAND, type SnapshotData } from "./protocol.ts";
 
 class FakeSink implements Sink {
   records: JsonRecord[] = [];
@@ -83,7 +83,7 @@ test("every socket peer receives protocol-2 hello first and its own authoritativ
   const first = new FakeSink();
   fake.mux.addClient(first);
   const firstRequest = fake.toPi.at(-1)!;
-  assert.deepEqual(first.records[0], { type: "pimux_hello", protocol: 2, capabilities: ["snapshot", "stop", "detached", "contextual-input"],
+  assert.deepEqual(first.records[0], { type: "pimux_hello", protocol: 2, capabilities: ["snapshot", "stop", "detached", "contextual-input", "models"],
     muxId: "mux", clientId: 1, piPid: 42, socket: "/tmp/synthetic-mux.sock" });
   assert.equal("role" in first.records[0]!, false);
   fake.pi({ type: "agent_start" });
@@ -117,7 +117,7 @@ test("response IDs are isolated across equal peers and internal commands are hid
   fake.pi({ type: "response", id: b!.id, command: "get_state", success: true, data: { who: "peer" } });
   fake.pi({ type: "response", id: a!.id, command: "get_state", success: true, data: { who: "creator" } });
   fake.pi({ type: "response", id: c!.id, command: "get_messages", success: true });
-  fake.pi({ type: "response", id: d!.id, command: "get_commands", success: true, data: { commands: [{ name: SNAPSHOT_COMMAND }, { name: "worker-cancel" }] } });
+  fake.pi({ type: "response", id: d!.id, command: "get_commands", success: true, data: { commands: [{ name: SNAPSHOT_COMMAND }, { name: MODELS_COMMAND }, { name: "worker-cancel" }] } });
   assert.deepEqual(fake.sink.take(), [{ type: "response", id: "same", command: "get_state", success: true, data: { who: "creator" } }]);
   const records = peer.sink.take();
   assert.deepEqual(records[1]!.id, { arbitrary: [7] });
@@ -458,4 +458,114 @@ test("finish sends exit to muted peers, rejects internal readiness and purges pe
   assert.equal(fake.mux.pendingRequestCount, 0);
   await assert.rejects(fake.mux.takeSnapshot(), /Pi has exited/);
   assert.throws(() => fake.mux.addClient(new FakeSink()), /Pi has exited/);
+});
+
+test("model operations use internal handled commands and requester-only structured results", () => {
+  const fake = attach();
+  const peer = attachPeer(fake);
+  fake.sink.take(); peer.sink.take();
+  fake.mux.clientLine(fake.client, JSON.stringify({ id: "list", type: "pimux_models", action: "list", force: true }));
+  const listed = fake.toPi.at(-1)!;
+  const envelope = JSON.parse(String(listed.message).slice(MODELS_COMMAND.length + 2)) as { requestId: string; request: unknown };
+  assert.equal(listed.type, "prompt");
+  assert.deepEqual(envelope, { requestId: listed.id, request: { action: "list", force: true } });
+  assert.equal(fake.sink.records.length, 0);
+  const model = { provider: "openai", id: "gpt-6.2-sol", name: "Sol 6.2", reasoning: true, input: ["text"], contextWindow: 10000 };
+  fake.companion({ kind: "models-result", requestId: String(listed.id), success: true, data: { models: [model] } });
+  fake.pi({ type: "response", id: listed.id, command: "prompt", success: true, data: { disposition: "handled" } });
+  assert.deepEqual(fake.sink.take(), [{ type: "response", command: "pimux_models", id: "list", success: true, data: { models: [model] } }]);
+  assert.equal(peer.sink.records.length, 0);
+  fake.mux.clientLine(fake.client, JSON.stringify({ id: "set", type: "pimux_models", action: "set", provider: "openai", modelId: "gpt-6.2-sol", pimuxContext: fake.mux.state.inputContext }));
+  const selected = fake.toPi.at(-1)!;
+  fake.companion({ kind: "model", model, previousModel: null, source: "set" });
+  fake.companion({ kind: "models-result", requestId: String(selected.id), success: true, data: { model, thinkingLevel: "high" } });
+  fake.pi({ type: "response", id: selected.id, command: "prompt", success: true, data: { disposition: "handled" } });
+  assert.equal(fake.sink.records.at(-1)!.id, "set");
+  assert.equal(peer.sink.records.at(-1)!.type, "pimux_model_changed");
+  assert.equal(fake.mux.pendingRequestCount, 0);
+  assert.deepEqual(fake.diagnostics, []);
+});
+
+test("model mutations require current context, idleness and no previously admitted input", () => {
+  const fake = attach();
+  const request = { type: "pimux_models", action: "set", provider: "openai", modelId: "sol", pimuxContext: fake.mux.state.inputContext };
+  const before = fake.toPi.length;
+  for (const invalid of [{ ...request, action: "bogus" }, { ...request, provider: "a/b" }, { ...request, pimuxContext: null }]) {
+    fake.mux.clientLine(fake.client, JSON.stringify(invalid));
+    assert.equal(fake.sink.records.at(-1)!.success, false);
+  }
+  fake.pi({ type: "agent_start" });
+  fake.mux.clientLine(fake.client, JSON.stringify(request));
+  assert.equal((fake.sink.records.at(-1)!.error as { code: string }).code, "agent_working");
+  fake.pi({ type: "agent_settled" });
+  fake.pi({ type: "extension_ui_request", id: "dialog", method: "input" });
+  fake.mux.clientLine(fake.client, JSON.stringify(request));
+  assert.equal((fake.sink.records.at(-1)!.error as { code: string }).code, "agent_blocked");
+  fake.companion({ kind: "prompts-ended" });
+  assert.equal(fake.toPi.length, before);
+  fake.mux.clientLine(fake.client, JSON.stringify({ type: "prompt", message: "pending", pimuxContext: request.pimuxContext }));
+  const admitted = fake.toPi.length;
+  fake.mux.clientLine(fake.client, JSON.stringify(request));
+  assert.equal(fake.toPi.length, admitted);
+  assert.equal((fake.sink.records.at(-1)!.error as { code: string }).code, "agent_working");
+});
+
+test("a model switch fences new input through disconnection and rejects direct internal commands", () => {
+  const fake = attach(); const peer = attachPeer(fake);
+  const context = fake.mux.state.inputContext;
+  fake.mux.clientLine(fake.client, JSON.stringify({ type: "pimux_models", action: "set", provider: "openai", modelId: "sol", pimuxContext: context }));
+  const request = fake.toPi.at(-1)!;
+  assert.equal(fake.mux.pendingInputCount, 1);
+  fake.mux.removeClient(fake.client);
+  const before = fake.toPi.length;
+  for (const command of [
+    { type: "prompt", message: "continue" }, { type: "new_session" },
+    { type: "pimux_models", action: "set", provider: "openrouter", modelId: "sol" },
+    { type: "prompt", message: `/${MODELS_COMMAND} {}` },
+  ]) {
+    fake.mux.clientLine(peer.client, JSON.stringify({ ...command, pimuxContext: context }));
+    assert.equal(peer.sink.records.at(-1)!.success, false);
+  }
+  assert.equal(fake.toPi.length, before);
+  fake.companion({ kind: "models-result", requestId: String(request.id), success: false, error: { code: "model_unavailable", message: "unavailable" } });
+  assert.equal(fake.mux.pendingInputCount, 0);
+  fake.mux.clientLine(peer.client, JSON.stringify({ type: "prompt", message: "continue", pimuxContext: context }));
+  assert.equal(fake.toPi.length, before + 1);
+  assert.equal(fake.toPi.at(-1)!.message, "continue");
+});
+
+test("a terminal internal prompt acknowledgement releases the fence even without a companion result", () => {
+  for (const success of [false, true]) {
+    const fake = attach();
+    const request = { type: "pimux_models", action: "set", provider: "mistral", modelId: "new", pimuxContext: fake.mux.state.inputContext };
+    fake.mux.clientLine(fake.client, JSON.stringify(request));
+    const dispatched = fake.toPi.at(-1)!;
+    fake.pi({ type: "response", id: dispatched.id, command: "prompt", success, error: "synthetic command failure", data: { disposition: "handled" } });
+    assert.equal((fake.sink.records.at(-1)!.error as { code: string }).code, "model_uncertain");
+    assert.equal(fake.sink.records.at(-1)!.delivery, "uncertain");
+    assert.equal(fake.mux.pendingInputCount, 0);
+    assert.equal(fake.mux.pendingRequestCount, 0);
+    fake.mux.clientLine(fake.client, JSON.stringify({ type: "prompt", message: "continue", pimuxContext: request.pimuxContext }));
+    assert.equal(fake.toPi.at(-1)!.message, "continue");
+    fake.mux.finish({ code: 0, signal: null, stderrTail: "" });
+  }
+});
+
+test("model acknowledgement timeout is uncertain and keeps its fence until terminal evidence", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const fake = attach({ modelTimeoutMs: 10 });
+  const request = { id: "set", type: "pimux_models", action: "set", provider: "openai", modelId: "sol", pimuxContext: fake.mux.state.inputContext };
+  fake.mux.clientLine(fake.client, JSON.stringify(request));
+  const dispatched = fake.toPi.at(-1)!;
+  t.mock.timers.tick(10);
+  assert.equal((fake.sink.records.at(-1)!.error as { code: string }).code, "model_uncertain");
+  assert.equal(fake.mux.pendingInputCount, 1);
+  const count = fake.sink.records.length;
+  fake.companion({ kind: "models-result", requestId: String(dispatched.id), success: true, data: { model: { provider: "openai", id: "sol", name: "Sol", reasoning: true, input: ["text"], contextWindow: 10000 }, thinkingLevel: "off" } });
+  assert.equal(fake.sink.records.length, count, "no late acknowledgement or retry");
+  assert.equal(fake.mux.pendingRequestCount, 0);
+  fake.mux.clientLine(fake.client, JSON.stringify({ id: "list", type: "pimux_models", action: "list" }));
+  t.mock.timers.tick(10);
+  assert.equal((fake.sink.records.at(-1)!.error as { code: string }).code, "model_refresh_timeout");
+  assert.equal(fake.mux.pendingRequestCount, 0);
 });

@@ -44,6 +44,7 @@
 (require 'pilish-jsonl)
 (require 'pilish-render)
 (require 'pilish-storage)
+(require 'pilish-model)
 (require 'transient)
 
 (declare-function pilish-session-browser "pilish-browse")
@@ -1172,118 +1173,6 @@ INPUT-CONTEXT binds a delayed caller's name to its original conversation."
                     (message "Pi: Session name set to \"%s\"" trimmed-name))
                 (message "Pi: Failed to set session name: %s"
                          (or (plist-get response :error) "unknown error")))))))))
-
-(defun pilish-select-model (&optional initial-input)
-  "Select a model interactively.
-Optional INITIAL-INPUT pre-fills the completion prompt for filtering."
-  (interactive)
-  (let ((proc (pilish--get-process))
-        (chat-buf (pilish--get-chat-buffer)))
-    (unless proc
-      (user-error "No pi process running"))
-    (when (pilish--model-change-pending-p chat-buf)
-      (user-error "A model change is already pending"))
-    (when (pilish--session-transition-ready-p
-           chat-buf "change models")
-      (let* ((input-context (pilish--capture-input-context proc))
-           (state (pilish--menu-state))
-           (response (pilish--rpc-sync proc '(:type "get_available_models") 5))
-           (data (plist-get response :data))
-           (models (plist-get data :models))
-           (current-name (plist-get (plist-get state :model) :name))
-           (current-provider (plist-get (plist-get state :model) :provider))
-           (current-short (and current-name
-                               (pilish--shorten-model-name current-name)))
-           (current-display (and current-short current-provider
-                                (format "%s [%s]" current-short current-provider)))
-           ;; Build alist of (display-string . model-plist) for selection
-           ;; Display includes provider for clarity
-           (model-alist (mapcar (lambda (m)
-                                  (let ((short (pilish--shorten-model-name
-                                               (plist-get m :name)))
-                                        (prov (plist-get m :provider)))
-                                    (cons (format "%s [%s]" short (or prov "?"))
-                                          m)))
-                                models))
-           (names (mapcar #'car model-alist))
-           ;; Pi's canonical PROVIDER/ID (or a unique ID) selects exactly.
-           (exact (and initial-input
-                       (cl-remove-if-not
-                        (lambda (entry)
-                          (let ((m (cdr entry)))
-                            (member initial-input
-                                    (list (plist-get m :id)
-                                          (format "%s/%s" (plist-get m :provider)
-                                                  (plist-get m :id))))))
-                        model-alist)))
-           (choice (if (= (length exact) 1)
-                       (caar exact)
-                     (let ((completion-ignore-case t)
-                         (completion-styles '(basic flex)))
-                     (if initial-input
-                         ;; Try auto-selecting on unique match
-                         (let ((matches (completion-all-completions
-                                         initial-input names nil
-                                         (length initial-input))))
-                           (when (consp matches)
-                             (setcdr (last matches) nil))
-                           (cond
-                            ((= (length matches) 1) (car matches))
-                            ((null matches)
-                             (message "Pi: No model matching \"%s\"" initial-input)
-                             nil)
-                            (t (completing-read
-                                (format "Model (current: %s): "
-                                        (or current-display "unknown"))
-                                names nil t initial-input))))
-                       (completing-read
-                        (format "Model (current: %s): "
-                                (or current-display "unknown"))
-                        names nil t))))))
-      (when (and choice
-                 (not (equal choice current-display))
-                 (pilish--session-transition-ready-p
-                  chat-buf "change models"))
-        (let* ((selected-model (cdr (assoc choice model-alist)))
-               (model-id (plist-get selected-model :id))
-               (provider (plist-get selected-model :provider))
-               (token (pilish--begin-model-change proc chat-buf)))
-          (if (not token)
-              (message "Pi: Process changed while selecting a model; try again")
-            (condition-case err
-                (pilish--rpc-async
-                 proc (pilish--bind-input-context
-                       (list :type "set_model"
-                             :provider provider
-                             :modelId model-id)
-                       input-context)
-                 (lambda (resp)
-                   (when (pilish--model-change-current-p token chat-buf)
-                     (let ((success (eq (plist-get resp :success) t))
-                           (applied nil))
-                       (unwind-protect
-                           (when success
-                             (with-current-buffer chat-buf
-                               (pilish--update-state-from-response resp)
-                               (force-mode-line-update))
-                             (setq applied t))
-                         (when (pilish--finish-model-change
-                                token chat-buf)
-                           (when (buffer-live-p chat-buf)
-                             (with-current-buffer chat-buf
-                               (if applied
-                                   (pilish--process-followup-queue)
-                                 (pilish--restore-followup-queue-to-input))))
-                           (cond
-                            (applied
-                             (message "Pi: Model set to %s" choice))
-                            ((not success)
-                             (message "Pi: Failed to set model: %s"
-                                      (or (plist-get resp :error)
-                                          "unknown error"))))))))))
-              ((error quit)
-               (pilish--finish-model-change token chat-buf)
-               (signal (car err) (cdr err)))))))))))
 
 (defun pilish--thinking-level-effective-value (level model)
   "Return LEVEL's provider value for MODEL.

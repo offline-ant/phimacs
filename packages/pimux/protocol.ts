@@ -4,7 +4,7 @@
  */
 
 export const PROTOCOL_VERSION = 2;
-export const RUNTIME_CAPABILITIES = ["snapshot", "stop", "detached", "contextual-input"] as const;
+export const RUNTIME_CAPABILITIES = ["snapshot", "stop", "detached", "contextual-input", "models"] as const;
 
 /**
  * The router's opaque selected-file/branch anchor, not a snapshot generation or
@@ -47,6 +47,45 @@ export const COMPANION_STATUS_PREFIX = "pimux:";
 export const COMPANION_STATUS_KEY = "pimux:companion";
 /** Internal extension command the wrapper sends to take a snapshot. */
 export const SNAPSHOT_COMMAND = "pimux-snapshot";
+/** Internal command for correlated in-process catalog refresh and model selection. */
+export const MODELS_COMMAND = "pimux-models";
+
+export type ModelsAction =
+  | { action: "list"; force?: boolean }
+  | { action: "set"; provider: string; modelId: string };
+
+/** Public picker metadata; provider request configuration stays inside Pi. */
+export interface ModelDescriptor {
+  provider: string;
+  id: string;
+  name: string;
+  reasoning: boolean;
+  input: readonly string[];
+  contextWindow: number;
+}
+
+export interface ModelControlError { code: string; message: string }
+export type ModelsOutcome =
+  | { success: true; data: { models: readonly ModelDescriptor[] } | { model: ModelDescriptor; thinkingLevel: string } }
+  | { success: false; error: ModelControlError };
+
+/** Validate client/companion command arguments at the JSON boundary. */
+export function parseModelsAction(value: unknown): ModelsAction | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.action === "list" && (value.force === undefined || typeof value.force === "boolean")) {
+    return { action: "list", ...value.force === undefined ? {} : { force: value.force } };
+  }
+  if (value.action === "set" && typeof value.provider === "string" && value.provider.length > 0
+    && !/[\s/]/.test(value.provider) && typeof value.modelId === "string" && value.modelId.length > 0
+    && !/\s/.test(value.modelId)) return { action: "set", provider: value.provider, modelId: value.modelId };
+  return undefined;
+}
+
+/** Listing refreshes the provider catalog, but does not change conversation input. */
+export function isReadOnlyRequest(request: JsonRecord): boolean {
+  return (request.type === "pimux_models" && request.action === "list")
+    || (typeof request.type === "string" && isReadOnlyCommand(request.type));
+}
 /** Client-invoked extension command that moves the session leaf in place: `/pimux-tree-navigate [--summarize] <entryId>`. */
 export const TREE_NAVIGATE_COMMAND = "pimux-tree-navigate";
 /** customType of the custom entry that persists an unsummarized leaf move across Pi restarts. */
@@ -101,7 +140,8 @@ export type CompanionRecord =
   | { kind: "snapshot"; generation: number; data: SnapshotData }
   | { kind: "snapshot-failed"; generation: number; error: string }
   | { kind: "model"; model: unknown; previousModel: unknown; source: string }
-  | { kind: "prompts-ended" };
+  | { kind: "prompts-ended" }
+  | ({ kind: "models-result"; requestId: string } & ModelsOutcome);
 
 export function isRecord(value: unknown): value is JsonRecord {
   return typeof value === "object" && value !== null && !Array.isArray(value);

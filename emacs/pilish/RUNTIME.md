@@ -455,7 +455,15 @@ proof of exit. Retain uncertain test-operation evidence for inspection.
 The real Pi/faux tests cover creation from Pilish and an
 independent creator, equal contextual direct-socket attachment, zero-client
 survival, reconnect/desktop restore to the same actual Pi, another frontend's
-moved-session adoption/quarantine and acknowledged explicit stop. The public
+moved-session adoption/quarantine and acknowledged explicit stop.
+`pilish-runtime-native-test-model-picker-refreshes-and-selects-exact-provider`
+publishes a new faux catalog while Pi stays running, then uses the actual Emacs
+picker and managed bridge to select direct OpenAI instead of an identically named
+OpenRouter model. It verifies the model event and effective thinking state,
+unchanged runtime/session identity, conversation, defaults and draft, and no
+inference. A successful model acknowledgement held across a real snapshot still
+settles in its original opaque context; reconnecting the same runtime also keeps
+that context. The fixture stays offline and rejects agent runs before inference. The public
 saved-file entry point opens its exact existing conversation during asynchronous
 startup and submits once there. A restored stopped view additionally
 resumes its exact persisted history without submitting a draft or any prompt.

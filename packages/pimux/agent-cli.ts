@@ -18,6 +18,8 @@ export interface AgentResult { output: unknown; exitCode: number }
 
 export const AGENT_USAGE = `Usage: pimux agent list [--all]
        pimux agent get <muxId>
+       pimux agent model <muxId> <provider/model> [--timeout MS]
+       pimux agent model <muxId> --list [--refresh] [--timeout MS]
        pimux agent read <muxId> [--messages N] [--format json|text]
        pimux agent wait <muxId> [--until idle|working|blocked]... [--next-turn] [--timeout MS]
        pimux agent prompt <muxId> [--follow-up|--steer] [--wait [--until STATE]...] [--timeout MS] -- <text>`;
@@ -43,12 +45,13 @@ function failure(code: string, message: string, exitCode = EXIT_ERROR, details: 
 
 interface Options {
   positional: string[]; text: string[]; until: MuxStatus[]; all: boolean; nextTurn: boolean; wait: boolean;
-  followUp: boolean; steer: boolean; messages?: number; timeoutMs?: number; format: "json" | "text";
+  followUp: boolean; steer: boolean; listModels: boolean; refresh: boolean;
+  messages?: number; timeoutMs?: number; format: "json" | "text";
 }
 
 function parse(args: string[]): Options {
   const options: Options = { positional: [], text: [], until: [], all: false, nextTurn: false, wait: false,
-    followUp: false, steer: false, format: "json" };
+    followUp: false, steer: false, listModels: false, refresh: false, format: "json" };
   const usage = (message: string): never => { throw new AgentFailure(failure("usage", `${message}\n${AGENT_USAGE}`)); };
   const count = (value: string | undefined, name: string): number => {
     const parsed = Number(value);
@@ -64,6 +67,8 @@ function parse(args: string[]): Options {
     else if (argument === "--wait") options.wait = true;
     else if (argument === "--follow-up") options.followUp = true;
     else if (argument === "--steer") options.steer = true;
+    else if (argument === "--list") options.listModels = true;
+    else if (argument === "--refresh") options.refresh = true;
     else if (argument === "--messages") options.messages = count(value(), "--messages");
     else if (argument === "--timeout") options.timeoutMs = count(value(), "--timeout");
     else if (argument === "--until") {
@@ -88,6 +93,8 @@ export async function agentCommand(args: string[], env: NodeJS.ProcessEnv = proc
       if (options.positional.length !== 1) throw new AgentFailure(failure("usage", AGENT_USAGE));
       return options.positional[0]!;
     };
+    if (action !== "model" && (options.listModels || options.refresh)) return failure("usage", AGENT_USAGE);
+    if (action === "model") return await model(options, env);
     if (action === "list") return { output: list(env, options.all), exitCode: 0 };
     if (action === "get") return { output: summary(target(id(), env), callerId(env)), exitCode: 0 };
     if (action === "read") return await read(target(id(), env), options, env);
@@ -243,6 +250,66 @@ function wait(record: DiscoveryRecord, options: Options, env: NodeJS.ProcessEnv)
     const status = connection.status();
     if (armed && until.has(status.status)) finish({ exitCode: 0, output: { muxId: record.muxId, ...status, answer: exchange(connection).answer } });
   });
+}
+
+/** Refreshes or switches one peer's models without submitting a prompt. */
+async function model(options: Options, env: NodeJS.ProcessEnv): Promise<AgentResult> {
+  const [id, reference] = options.positional;
+  const slash = reference?.indexOf("/") ?? -1;
+  if (!id || options.positional.length !== (options.listModels ? 1 : 2)
+    || (!options.listModels && (slash <= 0 || slash === reference!.length - 1 || /\s/.test(reference!)))
+    || (options.refresh && !options.listModels) || options.text.length || options.all || options.nextTurn
+    || options.wait || options.followUp || options.steer || options.messages !== undefined || options.until.length
+    || options.format !== "json") return failure("usage", AGENT_USAGE);
+  const record = target(id, env);
+  if (!options.listModels && record.muxId === callerId(env)) return failure("self_target", "An agent cannot switch its own model through the peer client");
+  const provider = reference?.slice(0, slash);
+  const modelId = reference?.slice(slash + 1);
+  const request = new AbortController();
+  let pending: Promise<AgentResult> | undefined;
+  const result = await follow(record, options.timeoutMs ?? 30_000, env, (connection, _observed, finish) => {
+    if (pending) return;
+    const status = connection.status();
+    if (!options.listModels && status.status === "blocked") return finish(failure("agent_blocked", "The agent waits for its user; no model change was sent", EXIT_ERROR, { blocked: status.blocked }));
+    if (!options.listModels && status.status !== "idle") return finish(failure("agent_working", "The agent is working; no model change was sent", EXIT_ERROR, status));
+    const sessionFile = connection.session?.file;
+    if (!sessionFile || record.piPid === null) return finish(failure("agent_unavailable", "The agent has no committed session"));
+    const identity = { muxId: record.muxId, sessionFile };
+    pending = runtimeRequest({ protocol: 2, operationId: record.operationId ?? "", muxId: record.muxId, socket: record.socket,
+      pid: record.pid, piPid: record.piPid, sessionFile, state: "committed", outcome: "attached" },
+    { type: "pimux_models", ...options.listModels ? { action: "list", ...options.refresh ? { force: true } : {} }
+      : { action: "set", provider, modelId } }, request.signal).then((response): AgentResult => {
+      if (response.success !== true) {
+        const error = response.error;
+        return failure(isRecord(error) && typeof error.code === "string" ? error.code : "model_rejected",
+          isRecord(error) && typeof error.message === "string" ? error.message : String(error ?? "Model operation rejected"), EXIT_ERROR, identity);
+      }
+      const data = response.data;
+      // The response is wire input. Never accept a different provider or an incomplete acknowledgement.
+      if (!isRecord(data) || (options.listModels ? !Array.isArray(data.models)
+        : !isRecord(data.model) || data.model.provider !== provider || data.model.id !== modelId || typeof data.thinkingLevel !== "string")) {
+        return failure(options.listModels ? "model_rejected" : "model_uncertain", "Invalid model-operation acknowledgement; it was not resent", EXIT_ERROR, identity);
+      }
+      return { exitCode: 0, output: { ...identity, ...options.listModels ? { models: data.models }
+        : { model: data.model, thinkingLevel: data.thinkingLevel } } };
+    }, (error: unknown): AgentResult => {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = !options.listModels && message.includes("may have been accepted") ? "model_uncertain"
+        : isRecord(error) && typeof error.code === "string" ? error.code : "agent_unavailable";
+      return failure(code, message, EXIT_ERROR, identity);
+    });
+    void pending.then(finish);
+  }, () => request.abort());
+  if (result.exitCode !== 0 && pending) {
+    // Observation can end before the request. Abort settles its exact delivery state;
+    // an attempted attachment alone must not be reported as a dispatched switch.
+    const outcome = await pending;
+    if (outcome.exitCode === 0) return outcome;
+    if ((outcome.output as { error: { code: string } }).error.code === "model_uncertain") {
+      return { ...outcome, exitCode: result.exitCode === EXIT_TIMEOUT ? EXIT_TIMEOUT : EXIT_ERROR };
+    }
+  }
+  return result;
 }
 
 /**

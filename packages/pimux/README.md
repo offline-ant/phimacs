@@ -90,6 +90,8 @@ pimux agent get <muxId>
 pimux agent read <muxId> [--messages N] [--format json|text]
 pimux agent wait <muxId> [--until idle|working|blocked]... [--next-turn] [--timeout MS]
 pimux agent prompt <muxId> [--follow-up|--steer] [--wait [--until STATE]...] [--timeout MS] -- <text>
+pimux agent model <muxId> <provider/model> [--timeout MS]
+pimux agent model <muxId> --list [--refresh] [--timeout MS]
 ```
 
 - Each command prints one JSON value (`read --format text` prints text). Failures
@@ -131,6 +133,40 @@ pimux agent prompt <muxId> [--follow-up|--steer] [--wait [--until STATE]...] [--
   thinking level changes. An agent waiting inside a long tool call (for example
   `do` with a running worker) stays `working` with an old `updatedAt`; that is
   not a stuck status.
+
+### Live model control
+
+`agent model --list` refreshes the owning Pi's catalogs, then lists authenticated
+chat models. Normal refresh respects provider freshness; `--refresh` forces it.
+Switching forces refresh for the exact selected provider before resolving its
+model ID. `openai/gpt-6.2-sol` and `openrouter/openai/gpt-6.2-sol` are distinct;
+model IDs may contain slashes. Offline mode restores cached catalogs only.
+
+Switches require an idle, unblocked agent, no previously admitted input and the
+current conversation context. New input is fenced until the operation settles.
+The result identifies the runtime/session and returns either `models` or
+`model` plus effective `thinkingLevel`. Refresh/authentication/unavailable-model
+failures are named errors, never fallback selections. Listing fails explicitly
+when catalog refresh fails; it does not label a cached list as freshly fetched.
+Switching changes only
+this session, not defaults, messages, drafts or the saved delegate pair, and sends
+no inference or `continue`. Send a separately requested prompt only after a
+successful model acknowledgement.
+
+The default CLI operation deadline is 30 seconds; `--timeout` overrides it.
+A timeout or lost reply after dispatch is uncertain, never retried. The runtime
+retains its input fence until the companion result or the internal command's
+terminal acknowledgement, even if the caller disconnects. A missing result after
+terminal acknowledgement reports uncertainty and releases the fence. A later
+model event/current-state query is authoritative. The
+companion bounds catalog refresh to ten seconds and propagates cancellation;
+the router bounds its acknowledgement wait to fifteen seconds.
+
+Live control requires the hello capability `models`. Old runtimes return
+`unsupported_operation` before a client forwards input; they are never restarted
+or sent an unknown slash command. Source updates do not add handlers to loaded
+owners/companions. Ordinary Pi RPC `get_available_models` still reads its snapshot;
+managed frontends use the model-control request below to refresh in process.
 
 ## Typed APIs
 
@@ -337,7 +373,7 @@ client lines are limited to 64 MiB, Pi records to 128 MiB.
 The first record is:
 
 ```json
-{"type":"pimux_hello","protocol":2,"muxId":"opaque","clientId":1,"piPid":1235,"socket":"/private/runtime.sock","capabilities":["snapshot","stop","detached"]}
+{"type":"pimux_hello","protocol":2,"muxId":"opaque","clientId":1,"piPid":1235,"socket":"/private/runtime.sock","capabilities":["snapshot","stop","detached","contextual-input","models"]}
 ```
 
 Pi JSONL records otherwise retain their RPC meaning. Framing splits LF only,
@@ -406,6 +442,35 @@ with a gap and snapshot. Repeated overflow or more than 64 MiB queued disconnect
 that peer; responses are not silently discarded. Recovery/reconnect never resends
 input whose delivery is uncertain.
 
+### Model catalogs and selection
+
+After the snapshot/live boundary, equal clients with the `models` capability use:
+
+```json
+{"type":"pimux_models","action":"list","force":true}
+{"type":"pimux_models","action":"set","provider":"openai","modelId":"gpt-6.2-sol","pimuxContext":{"sessionFile":"/absolute/session.jsonl","leafId":"entry","contextId":"opaque"}}
+```
+
+List omits `force` to respect freshness and needs no input context. Set requires
+`pimuxContext` and authoritative idle admission; it always forces its provider's
+refresh. Successful responses have `command:"pimux_models"` and
+`data:{models:[...]}` or `data:{model:...,thinkingLevel:"..."}`. Model descriptors
+contain only `provider`, `id`, `name`, `reasoning`, `input` and `contextWindow`.
+These responses omit configured headers, endpoints and other request metadata;
+existing model events and snapshots retain their separate contracts. Failures have
+`success:false,error:{code,message}`. `delivery:"uncertain"` means a set may have
+applied; do not resend it automatically. The bridge calls supported
+`ctx.modelRegistry.refresh` and `pi.setModel` APIs inside Pi, rechecks idleness,
+queued input and conversation identity after refresh, and preserves provider
+filters/authentication. It does not edit Pi or read credentials in the wrapper.
+
+The owner sends its reserved `pimux-models` command and consumes correlated
+`models-result` records through the existing companion status channel. Native
+prompt acknowledgements are internal, not operation success. Direct client use of
+the internal command is refused and it is absent from `get_commands`. Responses
+are requester-only; model/thinking events still reach every frontend. Reconnect
+never replays a list, selection or prompt.
+
 ### In-place tree navigation
 
 Pi's RPC reads the session tree (`get_tree`, `get_entries`) but cannot move its
@@ -467,4 +532,5 @@ node --test packages/pimux/ownership.test.ts packages/pimux/mux.test.ts packages
 node --test packages/pimux/pimux.test.ts packages/pimux/runtime.test.ts packages/pimux/lifecycle.test.ts packages/pimux/managed-tui.test.ts packages/pimux/host.test.ts packages/pimux/runtime-files.test.ts packages/pimux/receipt.test.ts
 node --test packages/pimux/service.test.ts packages/pimux/import-boundary.test.ts
 node scripts/test.mjs packages/pimux/tree-navigate.test.ts
+node scripts/test.mjs packages/pimux/model-control.test.ts packages/pimux/models.test.ts packages/pimux/agent-cli.test.ts packages/pimux/request.test.ts packages/pimux/mux.test.ts
 ```

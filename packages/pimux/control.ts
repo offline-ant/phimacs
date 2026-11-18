@@ -36,5 +36,5 @@ export async function control(args: string[]): Promise<void> {
     const muxId = option(args, "--id");
     if (!muxId) throw new Error("Usage: pimux stop --json --id <muxId>");
     json(await stopRuntime(muxId));
-  } else throw new Error("Usage: pimux serve; pimux {start|list|watch|lookup|resolve|receipt|stop} --json; pimux agent {list|get|read|wait|prompt}; pimux tui -- <absolute Pi executable> [arguments]");
+  } else throw new Error("Usage: pimux serve; pimux {start|list|watch|lookup|resolve|receipt|stop} --json; pimux agent {list|get|read|wait|prompt|model}; pimux tui -- <absolute Pi executable> [arguments]");
 }

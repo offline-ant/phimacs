@@ -1,13 +1,13 @@
 ---
 name: peer-agents
-description: "Inspect, wait for, read or message other top-level Pi agents in the same project or deck space, not your own workers: \"check the adjacent agent\", \"wait for it to finish\", \"what did it conclude\", \"tell the other agent…\". Covers pimux-managed agents in the Emacs deck through `pimux agent`. Herdr panes use the herdr skill; your own workers use do/delegate results."
+description: "Inspect, wait for, read, switch models or message other top-level Pi agents in the same project or deck space, not your own workers: \"check the adjacent agent\", \"wait for it to finish\", \"what did it conclude\", \"tell the other agent…\". Covers pimux-managed agents in the Emacs deck through `pimux agent`. Herdr panes use the herdr skill; your own workers use do/delegate results."
 ---
 
 # Peer agents
 
 `pimux agent` is a command-line frontend of managed Pi runtimes, beside Pilish.
 Every command prints one JSON value. Failures are `{"error":{"code","message",…}}`
-with exit code 1, `timeout` exits 2 and `agent_exited` exits 3. Full contract:
+with exit code 1, timeouts exit 2 and `agent_exited` exits 3. Full contract:
 the "Agent client" section of `phimacs/packages/pimux/README.md`.
 
 ## 1. List peers
@@ -60,7 +60,33 @@ it, and `inFlight` streaming text while it works. `--messages N` gives the last
 N user/assistant text messages; tool output and thinking are not included. If
 you need more detail, read its `sessionFile` (Pi JSONL) selectively.
 
-## 4. Prompt, only when the user asks
+## 4. Models
+
+```bash
+pimux agent model <muxId> --list --timeout 30000
+pimux agent model <muxId> --list --refresh --timeout 30000
+pimux agent model <muxId> openai-codex/gpt-6.2-sol --timeout 30000
+```
+
+Listing refreshes the target's live catalog, respecting provider freshness.
+`--refresh` forces a list refresh; offline runtimes remain offline. Switching
+forces that provider's refresh and selects only the exact `provider/model`.
+Split at the first slash: model IDs can contain slashes. OpenAI and OpenRouter
+are distinct providers; never substitute one for the other.
+
+Switch only when the user asks. The target must be idle, not blocked, and not
+yourself. A successful result identifies the `muxId`, `sessionFile`, selected
+`model` and effective `thinkingLevel`. Switching changes no global default and
+sends no prompt. If the user also asks to continue, confirm the model result,
+then submit `continue` separately with `pimux agent prompt`.
+
+An owner without the `models` capability refuses before forwarding. Do not work
+around this by sending a slash command, restarting the agent or opening another
+Pi against its session. `model_uncertain`, including a timeout after dispatch,
+means the switch may have happened: inspect the target before any further
+mutation and never resend automatically. A timeout before dispatch is `timeout`.
+
+## 5. Prompt, only when the user asks
 
 ```bash
 pimux agent prompt <muxId> --wait --timeout 600000 -- "message text"
@@ -75,5 +101,6 @@ read the peer first and never resend automatically.
 ## Never
 
 - Stop, close, abort or restart another agent, or answer its dialogs.
-- Prompt a peer without the user's request, or prompt yourself (`self_target`).
+- Prompt or switch a peer's model without the user's request, or target yourself
+  for either mutation (`self_target`).
 - Treat a `timeout` as the peer having finished.

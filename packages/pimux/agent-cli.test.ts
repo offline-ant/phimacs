@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { agentCommand } from "./agent-cli.ts";
 import { writeDiscovery, type DiscoveryRecord } from "./discovery.ts";
+import { LineSplitter } from "./jsonl.ts";
+import type { JsonRecord } from "./protocol.ts";
 import { startMux, until } from "./test/harness.ts";
 
 const CONTROL = fileURLToPath(new URL("./control.ts", import.meta.url));
@@ -81,6 +85,144 @@ test("agent list selects same-cwd peers; get, read, prompt and wait observe one 
   assert.deepEqual(((await agentCommand(["read", id, "--messages", "2"], env)).output as { messages: unknown }).messages,
     [{ role: "user", text: "three" }, { role: "assistant", text: "reply: three" }]);
   assert.equal((await agentCommand(["read", id, "--messages", "1", "--format", "text"], env)).output, "[assistant]\nreply: three");
+});
+
+/** One synthetic socket owner; model requests exercise the real CLI/request boundary. */
+async function modelPeer(t: test.TestContext) {
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync.native("/tmp"), "pimux-agent-model-"));
+  const muxId = randomUUID();
+  const socketPath = path.join(dir, "runtime.sock");
+  const sessionFile = path.join(dir, "session.jsonl");
+  fs.writeFileSync(sessionFile, "", { mode: 0o600 });
+  const file = neighbour(dir, muxId, { socket: socketPath, piPid: process.pid, cwd: dir,
+    session: { file: sessionFile, id: "synthetic", name: "model peer" } });
+  const requests: JsonRecord[] = [];
+  const state = { status: "idle", models: true, live: true,
+    handle: (request: JsonRecord, socket: net.Socket): void => {
+      socket.write(`${JSON.stringify({ type: "response", id: request.id, success: false,
+        error: { code: "model_unavailable", message: "No synthetic model selected" } })}\n`);
+    } };
+  const sockets = new Set<net.Socket>();
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    socket.on("error", () => {});
+    socket.once("close", () => sockets.delete(socket));
+    const lines = new LineSplitter((line) => {
+      const request = JSON.parse(line) as JsonRecord;
+      requests.push(request);
+      state.handle(request, socket);
+    }, 1024 * 1024, () => socket.destroy());
+    socket.on("data", (chunk: Buffer) => lines.push(chunk));
+    const send = (record: object): void => { socket.write(`${JSON.stringify(record)}\n`); };
+    send({ type: "pimux_hello", protocol: 2, muxId, piPid: process.pid,
+      capabilities: ["snapshot", "detached", "contextual-input", ...state.models ? ["models"] : []] });
+    send({ type: "pimux_snapshot", generation: 1, session: { file: sessionFile, id: "synthetic", name: "model peer", cwd: dir },
+      run: { active: state.status === "working", compacting: false }, entries: [], messages: [],
+      inputContext: { sessionFile, leafId: null, contextId: "synthetic-context" } });
+    if (state.status === "blocked") send({ type: "extension_ui_request", id: "dialog", method: "select", title: "Waiting", options: ["yes"] });
+    if (state.live) send({ type: "pimux_live", generation: 1 });
+  });
+  await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+  fs.chmodSync(socketPath, 0o600);
+  t.after(async () => {
+    for (const socket of sockets) socket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+  return { muxId, sessionFile, requests, state, file, env: { PIMUX_DIR: dir } };
+}
+
+function errorCode(result: { output: unknown }): string {
+  return (result.output as { error: { code: string } }).error.code;
+}
+
+test("agent model lists a refreshed faux catalog and selects exact providers, including slash model IDs", { timeout: 5000 }, async (t) => {
+  const peer = await modelPeer(t);
+  const direct = { provider: "openai", id: "gpt-6.2-sol", name: "Sol 6.2" };
+  const router = { provider: "openrouter", id: "openai/gpt-6.2-sol", name: "Sol 6.2" };
+  let models = [router];
+  peer.state.handle = (request, socket) => {
+    assert.equal(request.type, "pimux_models");
+    assert.equal("message" in request, false);
+    assert.equal("persist" in request, false);
+    if (request.action === "list") {
+      if (request.force) models = [direct, router];
+      socket.write(`${JSON.stringify({ type: "response", id: request.id, success: true, data: { models } })}\n`);
+    } else {
+      const selected = models.find((model) => model.provider === request.provider && model.id === request.modelId);
+      assert.ok(selected);
+      assert.deepEqual(request.pimuxContext, { sessionFile: peer.sessionFile, leafId: null, contextId: "synthetic-context" });
+      socket.write(`${JSON.stringify({ type: "response", id: request.id, success: true, data: { model: selected, thinkingLevel: "high" } })}\n`);
+    }
+  };
+  assert.deepEqual(await agentCommand(["model", peer.muxId, "--list"], peer.env),
+    { exitCode: 0, output: { muxId: peer.muxId, sessionFile: peer.sessionFile, models: [router] } });
+  assert.equal(peer.requests[0]!.force, undefined);
+  assert.deepEqual(await agentCommand(["model", peer.muxId, "--list", "--refresh"], peer.env),
+    { exitCode: 0, output: { muxId: peer.muxId, sessionFile: peer.sessionFile, models: [direct, router] } });
+  for (const selected of [direct, router]) {
+    assert.deepEqual(await agentCommand(["model", peer.muxId.slice(0, 8), `${selected.provider}/${selected.id}`], peer.env),
+      { exitCode: 0, output: { muxId: peer.muxId, sessionFile: peer.sessionFile, model: selected, thinkingLevel: "high" } });
+  }
+  assert.deepEqual(peer.requests.map(({ action, provider, modelId, force }) => ({ action, provider, modelId, force })), [
+    { action: "list", provider: undefined, modelId: undefined, force: undefined },
+    { action: "list", provider: undefined, modelId: undefined, force: true },
+    { action: "set", provider: "openai", modelId: "gpt-6.2-sol", force: undefined },
+    { action: "set", provider: "openrouter", modelId: "openai/gpt-6.2-sol", force: undefined },
+  ]);
+});
+
+test("agent model rejects invalid syntax, self, working and blocked switches without forwarding", { timeout: 5000 }, async (t) => {
+  const peer = await modelPeer(t);
+  for (const args of [[], ["sol"], ["openai/"], ["/sol"], ["openai/ sol"], ["openai/sol", "--refresh"],
+    ["openai/sol", "--list"], ["--refresh"], ["--list", "--steer"], ["--list", "--timeout", "0"]]) {
+    assert.equal(errorCode(await agentCommand(["model", peer.muxId, ...args], peer.env)), "usage");
+  }
+  assert.equal(errorCode(await agentCommand(["model", peer.muxId, "openai/sol"], { ...peer.env, PIMUX_DISCOVERY: peer.file })), "self_target");
+  for (const status of ["working", "blocked"]) {
+    peer.state.status = status;
+    assert.equal(errorCode(await agentCommand(["model", peer.muxId, "openai/sol"], peer.env)), `agent_${status}`);
+  }
+  assert.deepEqual(peer.requests, []);
+});
+
+test("agent model preserves structured backend errors and never selects a fallback", { timeout: 5000 }, async (t) => {
+  const peer = await modelPeer(t);
+  for (const code of ["refresh_failed", "model_unavailable", "stale_context", "auth_unavailable"]) {
+    peer.state.handle = (request, socket) => socket.write(`${JSON.stringify({ type: "response", id: request.id, success: false,
+      error: { code, message: "Synthetic refusal" } })}\n`);
+    assert.deepEqual(await agentCommand(["model", peer.muxId, "openai/sol"], peer.env),
+      { exitCode: 1, output: { error: { code, message: "Synthetic refusal", muxId: peer.muxId, sessionFile: peer.sessionFile } } });
+  }
+  assert.equal(peer.requests.length, 4);
+});
+
+test("agent model reports wrong-provider acknowledgements and lost replies as uncertain without replay", { timeout: 5000 }, async (t) => {
+  const peer = await modelPeer(t);
+  peer.state.handle = (request, socket) => socket.write(`${JSON.stringify({ type: "response", id: request.id, success: true,
+    data: { model: { provider: "openrouter", id: "sol" }, thinkingLevel: "high" } })}\n`);
+  assert.equal(errorCode(await agentCommand(["model", peer.muxId, "openai/sol"], peer.env)), "model_uncertain");
+  peer.state.handle = (_request, socket) => { socket.end(); };
+  assert.equal(errorCode(await agentCommand(["model", peer.muxId, "openai/sol"], peer.env)), "model_uncertain");
+  peer.state.handle = () => {};
+  const timeout = await agentCommand(["model", peer.muxId, "openai/sol", "--timeout", "100"], peer.env);
+  assert.equal(timeout.exitCode, 2);
+  assert.equal(errorCode(timeout), "model_uncertain");
+  assert.equal(peer.requests.length, 3);
+});
+
+test("agent model times out before dispatch and refuses owners without models capability", { timeout: 5000 }, async (t) => {
+  const peer = await modelPeer(t);
+  peer.state.live = false;
+  const timeout = await agentCommand(["model", peer.muxId, "openai/sol", "--timeout", "50"], peer.env);
+  assert.equal(timeout.exitCode, 2);
+  assert.equal(errorCode(timeout), "timeout");
+  peer.state.live = true;
+  peer.state.models = false;
+  const result = await agentCommand(["model", peer.muxId, "openai/sol"], peer.env);
+  assert.equal(result.exitCode, 1);
+  assert.equal(errorCode(result), "unsupported_operation");
+  assert.deepEqual(peer.requests, []);
 });
 
 test("agent prompt refuses blocked agents and waits report exit with the terminal receipt", { timeout: 20_000 }, async (t) => {

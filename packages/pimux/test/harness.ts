@@ -171,8 +171,9 @@ export interface MuxRun extends Prepared {
   first: SocketPeer; receipt: RuntimeReceipt; ownerIdentity: ProcessIdentity; piIdentity: ProcessIdentity;
   discovery(): DiscoveryRecord | undefined; connect(): Promise<SocketPeer>; stop(): Promise<void>;
 }
-export async function startMux(t: TestContext, options: { env?: Record<string, string>; entries?: number; parent?: ParentTask } = {}): Promise<MuxRun> {
+export async function startMux(t: TestContext, options: { env?: Record<string, string>; entries?: number; parent?: ParentTask; extensions?: readonly string[] } = {}): Promise<MuxRun> {
   const prepared = prepare(options.entries);
+  for (const extension of options.extensions ?? []) prepared.piArgs.push("-e", extension);
   const env = { ...prepared.env, ...options.env };
   await startTestService(t, prepared, env);
   const parent = options.parent ?? (env.PI_ORCHESTRATION_PLACEMENT === "worker" ? { process: readProcessIdentity(process.pid)!, taskId: randomUUID() } : undefined);

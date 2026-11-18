@@ -6,7 +6,8 @@
 import { Client, type QueueLimits, DEFAULT_QUEUE_LIMITS, type Sink } from "./client.ts";
 import {
   COMPANION_STATUS_KEY, COMPANION_STATUS_PREFIX, type CompanionRecord, DIALOG_METHODS, isRecord, type JsonRecord,
-  ALL_INCLUDES, isReadOnlyCommand, parseInputContext, parseIncludes, PROTOCOL_VERSION, RUNTIME_CAPABILITIES, SNAPSHOT_COMMAND, type SnapshotData,
+  ALL_INCLUDES, isReadOnlyCommand, MODELS_COMMAND, parseModelsAction, type ModelsOutcome, parseInputContext, parseIncludes,
+  PROTOCOL_VERSION, RUNTIME_CAPABILITIES, SNAPSHOT_COMMAND, type SnapshotData,
 } from "./protocol.ts";
 import { DEFAULT_STATE_LIMITS, MuxState, type StateLimits } from "./state.ts";
 
@@ -33,6 +34,7 @@ export interface MuxOptions {
   queueLimits?: QueueLimits;
   stateLimits?: StateLimits;
   snapshotTimeoutMs?: number;
+  modelTimeoutMs?: number;
 }
 
 interface PendingRequest {
@@ -43,6 +45,8 @@ interface PendingRequest {
   changesContext?: boolean;
   /** Forwarded input, not an observation: Pi may still start work for it. */
   input?: boolean;
+  models?: "list" | "set";
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 /** Gated input may still end or answer existing work. */
@@ -78,6 +82,7 @@ export class Mux {
   private readonly readyClients = new Set<number>();
   private readonly contextTransitions = new Set<string>();
   private nextContext = 0;
+  private pendingModelChange: string | undefined;
 
   constructor(options: MuxOptions) {
     this.options = options;
@@ -122,7 +127,10 @@ export class Mux {
         request.clientId = null;
         request.originalId = undefined;
         request.hasId = false;
-      } else this.requests.delete(id);
+      } else {
+        clearTimeout(request.timer);
+        this.requests.delete(id);
+      }
     }
     for (const [generation, pending] of this.snapshots) {
       if (pending.clientId !== client.id) continue;
@@ -185,16 +193,14 @@ export class Mux {
       this.pimuxCommand(client, record);
       return;
     }
+    if (record.type === "prompt" && typeof record.message === "string"
+      && record.message.trimStart().split(/\s/, 1)[0] === `/${MODELS_COMMAND}`) {
+      this.respond(client, { type: "response", command: "prompt", id: record.id, success: false,
+        delivery: "rejected", error: "Use pimux_models for managed model control; input was not forwarded" });
+      return;
+    }
     if (!isReadOnlyCommand(record.type)) {
-      let error: string | undefined;
-      const expected = parseInputContext(record.pimuxContext);
-      const actual = this.state.inputContext;
-      const refusal = GATE_ALLOWED.has(record.type) ? undefined : this.options.inputRefusal?.();
-      if (this.options.canAcceptCommands?.() === false) error = "Runtime startup has not committed";
-      else if (refusal) error = refusal;
-      else if (!this.readyClients.has(client.id) || client.muteGeneration !== null || client.queuedLines > 0) error = "This client has not received a successful snapshot/live boundary";
-      else if (!actual || (this.contextTransitions.size > 0 && record.type !== "extension_ui_response")) error = "Runtime input context is pending or unknown";
-      else if (!expected || expected.contextId !== actual.contextId || expected.sessionFile !== actual.sessionFile || expected.leafId !== actual.leafId) error = "Stale or missing input context; recover this action in its original conversation";
+      const error = this.inputError(client, record);
       if (error) {
         this.respond(client, { ...("id" in record ? { id: record.id } : {}), type: "response", command: record.type,
           success: false, delivery: "rejected", error: `${error}; input was not forwarded` });
@@ -260,7 +266,9 @@ export class Mux {
       pending.reject?.(new Error("Pi exited before the snapshot boundary"));
     }
     this.snapshots.clear();
+    for (const request of this.requests.values()) clearTimeout(request.timer);
     this.requests.clear();
+    this.pendingModelChange = undefined;
     this.stopping.clear();
     this.readyClients.clear();
     this.contextTransitions.clear();
@@ -288,10 +296,30 @@ export class Mux {
     this.options.onStatus();
   }
 
+  private inputError(client: Client, record: JsonRecord): string | undefined {
+    const expected = parseInputContext(record.pimuxContext);
+    const actual = this.state.inputContext;
+    const allowed = GATE_ALLOWED.has(String(record.type));
+    const refusal = allowed ? undefined : this.options.inputRefusal?.();
+    if (this.options.canAcceptCommands?.() === false) return "Runtime startup has not committed";
+    if (refusal) return refusal;
+    if (!this.readyClients.has(client.id) || client.muteGeneration !== null || client.queuedLines > 0) return "This client has not received a successful snapshot/live boundary";
+    if (this.pendingModelChange && !allowed) return "A model change is pending";
+    if (!actual || (this.contextTransitions.size > 0 && record.type !== "extension_ui_response")) return "Runtime input context is pending or unknown";
+    if (!expected || expected.contextId !== actual.contextId || expected.sessionFile !== actual.sessionFile || expected.leafId !== actual.leafId) {
+      return "Stale or missing input context; recover this action in its original conversation";
+    }
+    return undefined;
+  }
+
   private pimuxCommand(client: Client, record: JsonRecord): void {
     const reply = (fields: JsonRecord): void => this.respond(client, {
       ...("id" in record ? { id: record.id } : {}), type: "response", command: record.type, ...fields,
     });
+    if (record.type === "pimux_models") {
+      this.modelsCommand(client, record);
+      return;
+    }
     if (record.protocol !== undefined && record.protocol !== PROTOCOL_VERSION) {
       reply({ success: false, error: `Unsupported pimux protocol: ${String(record.protocol)}` });
       return;
@@ -331,6 +359,77 @@ export class Mux {
     }
     client.include = include;
     reply({ success: true, data: { generation: this.bootstrap(client, "request") } });
+  }
+
+  private modelsCommand(client: Client, record: JsonRecord): void {
+    const refuse = (code: string, message: string): void => this.respond(client, {
+      type: "response", command: "pimux_models", ...("id" in record ? { id: record.id } : {}),
+      success: false, error: { code, message }, delivery: "rejected",
+    });
+    const request = parseModelsAction(record);
+    if (!request || (record.protocol !== undefined && record.protocol !== PROTOCOL_VERSION)) {
+      refuse("invalid_request", "Expected a model list or exact provider/model set request");
+      return;
+    }
+    if (request.action === "set") {
+      const error = this.inputError(client, record);
+      if (error) { refuse(this.pendingModelChange ? "model_change_pending" : "stale_context", error); return; }
+      const status = this.state.status();
+      if (status.status !== "idle" || this.pendingInputCount > 0) {
+        refuse(status.status === "blocked" ? "agent_blocked" : "agent_working", "Model changes require an idle, unblocked agent without pending input");
+        return;
+      }
+    } else if (this.options.canAcceptCommands?.() === false || !this.readyClients.has(client.id)
+      || client.muteGeneration !== null || client.queuedLines > 0) {
+      refuse("runtime_unavailable", "Model listing requires a committed snapshot/live boundary");
+      return;
+    }
+    if (this.requests.size >= (this.options.maxPendingRequests ?? 4096)) {
+      refuse("runtime_unavailable", "Too many pending requests");
+      return;
+    }
+    const id = `models:${client.id}/${++this.nextRequest}`;
+    const pending: PendingRequest = { clientId: client.id, hasId: "id" in record, originalId: record.id,
+      input: request.action === "set", models: request.action };
+    this.requests.set(id, pending);
+    if (request.action === "set") this.pendingModelChange = id;
+    pending.timer = setTimeout(() => {
+      if (pending.models === "set") this.modelsUncertain(id, "Model acknowledgement timed out; input remains fenced until the operation settles");
+      else this.modelsResult(id, { success: false, error: { code: "model_refresh_timeout", message: "Model listing timed out" } });
+    }, this.options.modelTimeoutMs ?? 15_000);
+    pending.timer.unref();
+    try {
+      this.options.writeToPi({ type: "prompt", id, message: `/${MODELS_COMMAND} ${json({ requestId: id, request })}` });
+    } catch {
+      if (pending.models === "set") this.modelsUncertain(id, "Model request delivery is uncertain; inspect current state, do not resend automatically");
+      else this.modelsResult(id, { success: false, error: { code: "model_refresh_failed", message: "Model request delivery failed" } });
+    }
+  }
+
+  private modelsUncertain(id: string, message: string): void {
+    const pending = this.requests.get(id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pending.timer = undefined;
+    const client = pending.clientId === null ? undefined : this.clients.get(pending.clientId);
+    if (client) this.respond(client, { type: "response", command: "pimux_models", ...(pending.hasId ? { id: pending.originalId } : {}),
+      success: false, delivery: "uncertain", error: { code: "model_uncertain", message } });
+    // Keep the fence until a companion result or terminal command acknowledgement.
+    pending.clientId = null;
+    pending.hasId = false;
+    pending.originalId = undefined;
+  }
+
+  private modelsResult(id: string, outcome: ModelsOutcome): void {
+    const pending = this.requests.get(id);
+    if (!pending?.models) return;
+    clearTimeout(pending.timer);
+    this.requests.delete(id);
+    if (this.pendingModelChange === id) this.pendingModelChange = undefined;
+    const client = pending.clientId === null ? undefined : this.clients.get(pending.clientId);
+    if (client) this.respond(client, { type: "response", command: "pimux_models", ...(pending.hasId ? { id: pending.originalId } : {}),
+      ...outcome.success ? { success: true, data: outcome.data }
+        : { success: false, error: outcome.error, ...outcome.error.code === "model_uncertain" ? { delivery: "uncertain" } : {} } });
   }
 
   /** Withholds live records from the client until the snapshot boundary of a new generation. */
@@ -413,6 +512,17 @@ export class Mux {
 
   private piResponse(record: JsonRecord, line: string): void {
     const id = record.id;
+    if (typeof id === "string" && id.startsWith("models:")) {
+      const pending = this.requests.get(id);
+      // Pi answers only after the internal handler settles. No result can follow
+      // this acknowledgement, so release the fence even when delivery is uncertain.
+      if (pending?.models) this.modelsResult(id, { success: false, error: {
+        code: pending.models === "set" ? "model_uncertain" : "model_control_failed",
+        message: record.success === false ? String(record.error ?? "Internal model command failed")
+          : "The internal command settled without a model result; inspect current state before retrying",
+      } });
+      return;
+    }
     if (typeof id === "string" && id.startsWith("pimux:")) {
       if (record.success === false) this.failSnapshot(Number(id.slice(6)), String(record.error ?? "snapshot request failed"));
       return;
@@ -428,7 +538,7 @@ export class Mux {
     else delete out.id;
     const data = out.data;
     if (out.command === "get_commands" && isRecord(data) && Array.isArray(data.commands)) {
-      out.data = { ...data, commands: data.commands.filter((command) => !isRecord(command) || command.name !== SNAPSHOT_COMMAND) };
+      out.data = { ...data, commands: data.commands.filter((command) => !isRecord(command) || command.name !== SNAPSHOT_COMMAND && command.name !== MODELS_COMMAND) };
     }
     const client = request.clientId === null ? undefined : this.clients.get(request.clientId);
     if (client) this.respond(client, out);
@@ -531,6 +641,9 @@ export class Mux {
 
   private companion(record: CompanionRecord): void {
     switch (record.kind) {
+      case "models-result":
+        this.modelsResult(record.requestId, record);
+        return;
       case "identity":
         if (this.state.session?.file !== record.session.file || this.state.session?.id !== record.session.id) {
           this.state.inputContext = null;

@@ -27,6 +27,36 @@ The public runtime callbacks receive nil or one error string. Runtime identity a
 actual Pi PID/start identity come from `pilish-session-runtime`, never a network
 transport's process ID. `pilish-process-info` reports the distinction.
 
+## Live model selection
+
+`pilish-select-model` (`C-c C-m`, or `m` in the menu) asks the managed
+runtime to refresh its authenticated chat catalog before showing completion.
+Discovery is asynchronous, with progress and errors in the echo area. The picker
+runs outside the socket filter and refuses an already-active minibuffer rather
+than taking its input. A prefix argument (`C-u C-c C-m`) forces refresh past
+the provider freshness limit; normal discovery keeps the provider's cooldown
+and offline policy.
+
+The owner must advertise the `models` capability. Listing uses
+`pimux_models` with `action: "list"`; selecting uses `action: "set"` and the
+exact provider/model ID. The set operation refreshes that provider, then
+acknowledges its selected model and effective thinking level. Model/thinking
+events update every attached frontend. No inference prompt, default-model
+change, fallback provider or automatic continuation is sent.
+
+The picker captures the process, session generation and opaque input context
+before asynchronous discovery and minibuffer selection. A changed owner or
+conversation discards the choices; a delayed set carries that original context.
+Refresh/switch failure does not open a stale picker or report success.
+Older owners without the capability refuse explicitly; reconnecting does not
+replace their loaded runtime code.
+
+Explicit unshared Pi retains `get_available_models` and `set_model` behavior.
+Pi 1.5.2's unshared RPC list reads its in-memory snapshot without refreshing;
+external `pi update --models` alone does not update that running snapshot.
+The managed bridge supplies the missing in-process refresh, not a fallback to
+ordinary prompt text.
+
 ## Shared context changes
 
 New/fork/resume confirm their every-frontend scope. They send only the owning RPC,

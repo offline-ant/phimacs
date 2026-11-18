@@ -123,6 +123,31 @@ test("mutations require the snapshot context; observations can read a history-er
   }
 });
 
+test("model control requires its advertised capability before dispatch; lists need no input context", async (t) => {
+  let oldRequests = 0;
+  const old = await peer(t, (socket, runtime) => {
+    socket.on("data", () => oldRequests++);
+    send(socket, hello(runtime)); send(socket, snapshot(runtime)); send(socket, { type: "pimux_live", generation: 1 });
+  });
+  const unsupported = await runtimeRequest(old, { type: "pimux_models", action: "set", provider: "openai", modelId: "sol" });
+  assert.equal(unsupported.success, false);
+  assert.equal((unsupported.error as { code: string }).code, "unsupported_operation");
+  assert.equal(oldRequests, 0);
+  let requests = 0;
+  const current = await peer(t, (socket, runtime) => {
+    socket.on("data", (chunk) => {
+      requests++;
+      const request = JSON.parse(chunk.toString()) as { id: string; pimuxContext?: unknown };
+      assert.equal(request.pimuxContext, undefined);
+      send(socket, { type: "response", id: request.id, success: true, data: { models: [] } });
+    });
+    send(socket, { ...hello(runtime), capabilities: ["snapshot", "detached", "contextual-input", "models"] });
+    send(socket, { ...snapshot(runtime), inputContext: null }); send(socket, { type: "pimux_live", generation: 1 });
+  });
+  assert.equal((await runtimeRequest(current, { type: "pimux_models", action: "list" })).success, true);
+  assert.equal(requests, 1);
+});
+
 test("runtime Pi identity comes from the matching claim, not a numeric PID", () => {
   const environment = createClaimTestEnvironment();
   const identity = readProcessIdentity(process.pid)!;

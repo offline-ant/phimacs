@@ -20,14 +20,14 @@ LOCAL_LOAD_PATH = --eval '(add-to-list (quote load-path) (expand-file-name "."))
 BATCH_TEST = $(BATCH) -L test $(LOCAL_LOAD_PATH) -l pilish
 ERT_RUN = --eval '(let ((selector (getenv "SELECTOR"))) (if (and selector (> (length selector) 0)) (progn (require (quote ert)) (unless (ert-select-tests selector t) (error "SELECTOR matched no tests: %s" selector)) (ert-run-tests-batch-and-exit selector)) (ert-run-tests-batch-and-exit t)))'
 
-UNIT_SUITES = core session-api dialog queue shared drafts shared-input menu-detached \
+UNIT_SUITES = core session-api dialog queue shared drafts shared-input menu-detached command-context \
 	storage runtime runtime-task runtime-watch style pair terminal-image ui render \
 	answer arguments benchmark table input menu browse jsonl snapshot build grammars \
 	evil fake-pi gui-test-utils integration-test-common
 PILISH_SOURCES = pilish-core.el pilish-jsonl.el pilish-grammars.el pilish-ui.el \
 	pilish-drafts.el pilish-dialog.el pilish-queue.el pilish-style.el \
 	pilish-answer.el pilish-terminal-image.el pilish-pair.el pilish-table.el \
-	pilish-render.el pilish-snapshot.el pilish-conversations.el pilish-input.el pilish-send-button.el pilish-menu.el \
+	pilish-render.el pilish-snapshot.el pilish-conversations.el pilish-input.el pilish-send-button.el pilish-model.el pilish-menu.el \
 	pilish-shared.el pilish-storage.el pilish-runtime-process.el \
 	pilish-runtime-task.el pilish-runtime.el pilish-runtime-watch.el pilish-browse.el pilish-evil.el pilish.el
 CHECK_SOURCES = scripts/pilish-build.el scripts/install-ts-grammars.el $(PILISH_SOURCES)
