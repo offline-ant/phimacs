@@ -1,10 +1,20 @@
 # Terminal showcase
 
 [phimacs.cast](phimacs.cast) is an asciinema recording (about two minutes) of the
-complete profile in a terminal, with real model inference. Replay it with:
+complete profile in a terminal, with real model inference.
+[phimacs.gif](phimacs.gif) is the same recording at 1.25× speed, with pauses
+shortened to two seconds, for the README. Replay the recording with:
 
 ```sh
 asciinema play docs/demo/phimacs.cast
+```
+
+The GIF was made with [agg](https://github.com/asciinema/agg) 1.9.0:
+
+```sh
+agg --text-font-family "DejaVu Sans Mono,Noto Sans Symbols,Noto Sans Symbols 2,FreeMono" \
+  --font-size 14 --theme github-dark --speed 1.25 --fps-cap 15 \
+  --idle-time-limit 2 --last-frame-duration 5 docs/demo/phimacs.cast docs/demo/phimacs.gif
 ```
 
 It shows:
