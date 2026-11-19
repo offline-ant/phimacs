@@ -116,7 +116,7 @@ The layouts on screen are remembered first, the selected frame's last."
     (list :version 3
           :owner (or pi-deck--state-owner (pi-deck-server-socket))
           :spaces pi-deck-spaces
-          :group-auto-clear pi-deck--group-auto-clear
+          :group-clear-finished pi-deck--group-clear-finished
           :space pi-deck--last-space
           :layouts pi-deck--layouts
           :agents (let ((tab-index (pi-deck-tab-index)))
@@ -200,7 +200,7 @@ Nothing is saved during a restore: the file still lists what remains."
 (defun pi-deck--save-on-structure-change ()
   "Schedule a save when spaces, the set of agents or closed workers changed."
   (let ((structure (list (copy-tree pi-deck-spaces)
-                         (copy-tree pi-deck--group-auto-clear)
+                         (copy-sequence pi-deck--group-clear-finished)
                          (mapcar #'pi-deck-agent-buffer (pi-deck-agents))
                          pi-deck--finished-workers)))
     (unless (equal structure pi-deck--saved-structure)
@@ -297,11 +297,10 @@ Frames then show their saved layouts."
     (dolist (space (plist-get state :spaces))
       (unless (pi-deck-space (plist-get space :name))
         (pi-deck--register-space (plist-get space :name) (plist-get space :dir)
-                                 (plist-get space :group) (plist-get space :auto-clear))))
-    (dolist (cell (plist-get state :group-auto-clear))
-      (when (and (consp cell) (memq (cdr cell) '(on off)) (pi-deck-group-members (car cell))
-                 (not (assoc (car cell) pi-deck--group-auto-clear)))
-        (push (cons (car cell) (cdr cell)) pi-deck--group-auto-clear)))
+                                 (plist-get space :group) (plist-get space :clear-finished))))
+    (dolist (group (plist-get state :group-clear-finished))
+      (when (and (stringp group) (pi-deck-group-members group))
+        (cl-pushnew group pi-deck--group-clear-finished :test #'equal)))
     (dolist (layout (plist-get state :layouts))
       (unless (assoc (car layout) pi-deck--layouts)
         (pi-deck--remember-layout (car layout) (cdr layout))))

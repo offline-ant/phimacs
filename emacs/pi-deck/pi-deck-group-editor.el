@@ -51,7 +51,7 @@
                    nil t))
 
 (defun pi-deck-rename-group (group name)
-  "Rename space GROUP to NAME, keeping its members and auto-clear override."
+  "Rename space GROUP to NAME, keeping its members and clear flag."
   (interactive
    (let ((group (pi-deck--read-group "Rename group: ")))
      (list group (read-string (format "Rename group %s to: " group) group))))

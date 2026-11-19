@@ -906,7 +906,7 @@ sidebar."
 ;;;; Preferences
 
 (defconst pi-deck-preference-variables
-  '(pi-deck-sidebar pi-deck-sidebar-width pi-deck-auto-clear-finished)
+  '(pi-deck-sidebar pi-deck-sidebar-width pi-deck-clear-finished-immediately)
   "Variables commands save to `pi-deck-preferences-file'.")
 
 (defun pi-deck--read-preferences ()

@@ -63,7 +63,7 @@ async function ertLane() {
   } else if (flag('--compile')) {
     args.push('--eval', '(setq byte-compile-error-on-warn t)', '-f', 'batch-byte-compile',
       ...(await fs.readdir(deck)).filter(file => file.endsWith('.el')).map(file => path.join(deck, file)),
-      ...['smoke', 'pi-deck-native-test', 'pi-deck-finished-test', 'pi-deck-auto-clear-test', 'pi-deck-sidebar-test', 'pi-deck-available-test', 'pi-deck-usage-test', ...(flag('--ui') ? ['pi-deck-disclosure-test'] : [])]
+      ...['smoke', 'pi-deck-native-test', 'pi-deck-finished-test', 'pi-deck-clear-immediately-test', 'pi-deck-sidebar-test', 'pi-deck-available-test', 'pi-deck-usage-test', ...(flag('--ui') ? ['pi-deck-disclosure-test'] : [])]
         .map(name => path.join(deck, 'test', `${name}.el`)));
   } else if (flag('--reference')) {
     args.push('-l', path.join(root, 'test/reference-deck-lifecycle.el'));
@@ -72,7 +72,7 @@ async function ertLane() {
       '--eval', `(ert-run-tests-batch-and-exit ${index < 0 ? '"^pi-orchestration-"' : selector})`);
   } else {
     const suites = flag('--ui') ? ['pi-deck-test', 'pi-deck-disclosure-test'] : ['pi-deck-detached-test', 'pi-deck-available-test'];
-    for (const suite of [...suites, 'pi-deck-finished-test', 'pi-deck-auto-clear-test', 'pi-deck-sidebar-test', 'pi-deck-usage-test']) args.push('--eval', `(require '${suite})`);
+    for (const suite of [...suites, 'pi-deck-finished-test', 'pi-deck-clear-immediately-test', 'pi-deck-sidebar-test', 'pi-deck-usage-test']) args.push('--eval', `(require '${suite})`);
     args.push('--eval', `(ert-run-tests-batch-and-exit ${selector})`);
   }
   try {

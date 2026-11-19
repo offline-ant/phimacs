@@ -129,7 +129,8 @@ The result shows as STRING in a mode or header line."
   parent            ; parent agent buffer (orchestration), or nil
   target            ; orchestration target ID, or nil
   placement         ; orchestration placement: "worker", "interactive-fork" or nil
-  closing)          ; non-nil while a Close awaits its stop acknowledgement
+  closing           ; non-nil while a Close awaits its stop acknowledgement
+  ended)            ; non-nil when a shell's command had ended at the last refresh
 
 (defvar pi-deck--agents (make-hash-table :test 'eq)
   "Tracked agents, keyed by their buffer.")
@@ -432,14 +433,19 @@ abnormally with code 2\"."
 (defun pi-deck--apply (agent state)
   "Record base STATE for AGENT, running observers on change.
 Leaving work (working, waiting or blocked to idle) while invisible makes
-it done."
-  (let ((old (pi-deck-agent-state agent)))
+it done.  A shell whose command ends also updates views: one exiting at
+its prompt stays idle, yet it is now finished."
+  (let ((old (pi-deck-agent-state agent))
+        (ended (pi-deck-agent-finished-shell-p agent)))
     (unless (eq old state)
       (setf (pi-deck-agent-state agent) state
             (pi-deck-agent-changed agent) (float-time))
       (when (and (eq state 'idle) (memq old '(working waiting blocked)))
         (setf (pi-deck-agent-seen agent) (pi-deck-agent-visible-p agent)))
       (run-hook-with-args 'pi-deck-agent-change-functions agent old state)
+      (pi-deck--schedule-update))
+    (unless (eq ended (pi-deck-agent-ended agent))
+      (setf (pi-deck-agent-ended agent) ended)
       (pi-deck--schedule-update))))
 
 (defun pi-deck--track (buffer kind)

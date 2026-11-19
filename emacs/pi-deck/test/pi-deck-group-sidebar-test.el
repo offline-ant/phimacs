@@ -97,8 +97,7 @@
                   (pi-deck-sidebar-mouse-3 (funcall click badge)))
                 (should (equal (pi-deck-test--menu-labels popped)
                                '("Rename…" "Edit members…" "Dissolve group" "--"
-                                 "Auto-clear finished: inherit (off)"
-                                 "Auto-clear finished: on" "Auto-clear finished: off")))
+                                 "Clear finished workers and shells immediately")))
                 (should-not edited)
                 (funcall (pi-deck-test--menu-command popped "Edit members…"))
                 (should (equal edited "Lace"))))))))))

@@ -65,9 +65,9 @@ A single result shows just `●`. When space is tight, lower-priority buttons
 drop first; the sidebar header still covers all spaces.
 
 Right-click a band for its menu: **Rename…**, **Edit members…** (the
-checklist), **Dissolve group** and the group's [auto-clear](#auto-clear)
-setting. Dissolving leaves every space open. Membership is saved with the
-spaces; fold state lasts for the session. The same checklist is available with
+checklist), **Dissolve group** and the group's **Clear finished workers and
+shells immediately** [checkbox](#immediate-clearing). Dissolving leaves every space
+open. Membership is saved with the spaces; fold state lasts for the session. The same checklist is available with
 `M-x pi-deck-new-group` and `M-x pi-deck-edit-group`; Tab moves through it
 and Return activates a button.
 
@@ -78,8 +78,8 @@ The sidebar is shown in frames with room for its width plus
 dragging its edge updates the shared saved width. Preferences never rewrite init.
 
 Its header summarizes blocked, unseen-finished, working and waiting agents; click it for
-next attention, right-click it for a menu with the default
-[auto-clear](#auto-clear) setting. The right-hand `[×]` clears finished workers and exited shells in
+next attention, right-click it for a menu with the global
+[immediate clearing](#immediate-clearing) checkbox. The right-hand `[×]` clears finished workers and exited shells in
 all spaces, including folded spaces and “other”. Worker session files stay on
 disk; terminal output is discarded. Live shells, waiting/running workers and all
 ordinary or disconnected Pi views are untouched. Cleanup needs no confirmation,
@@ -223,23 +223,22 @@ session links; Open transcript is read-only and Resume explicitly opens an
 independent session, returning no result to the old parent. Forgetting a finished
 worker row leaves its session on disk. Closing finished shells loses their output.
 
-### Auto-clear
+### Immediate clearing
 
-Auto-clear removes a parent's finished entries once its results are used: when
-the parent's run ends and you have seen it (its status becomes idle, without a
-done mark), deck forgets that parent's finished worker rows and closes its exited
-panels and shells, as `[×]` would. It never touches the parent, live shells, Pi
-views or other agents' children. Children that finish after that moment wait for
-the parent's next seen run end; agents restored or attached already idle wait too.
-A failed close keeps its entry and reports the error.
+By default finished workers and exited shells stay listed until you clear them
+with `[×]`. To clear them as they finish, check **Clear finished workers and
+shells immediately** in a space's right-click menu, a group band's menu, or the
+sidebar header's menu (**… in all spaces**). Then a worker that an agent started
+leaves no finished row when it closes (its session file stays on disk), and a
+panel or shell that an agent started closes as soon as its command ends, as
+`[×]` would. Shells you opened yourself always stay. A failed close keeps its
+entry, reports the error once and leaves it for `[×]`.
 
-The setting is off by default. Right-click the sidebar header for the default,
-a group band for its group, or a space for itself. Group and space menus choose
-**inherit** (showing the value it gives), **on** or **off**; the most specific
-choice wins: space, then group, then default. Space choices are saved with the
-spaces, group choices with the deck state (a renamed group keeps its choice; a
-dissolved group drops it) and the default as a preference
-(`pi-deck-auto-clear-finished`).
+A child is cleared when any of its parent's home space, that space's group or
+the global checkbox says so; agents without a space follow only the global one.
+Space choices are saved with the spaces, group choices with the deck state (a
+renamed group keeps its choice; a dissolved group drops it) and the global
+choice as a preference (`pi-deck-clear-finished-immediately`).
 
 Close stops the agent everywhere, without confirmation, whether idle, working or
 blocked. Sidebar ✕, title-bar ✕, menu Close and keyboard Close use the same action.

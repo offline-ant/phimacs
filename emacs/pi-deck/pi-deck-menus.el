@@ -16,7 +16,7 @@
 (require 'pi-deck-spaces)
 (require 'pi-deck-close)
 (require 'pi-deck-workers)
-(require 'pi-deck-auto-clear)
+(require 'pi-deck-clear-immediately)
 (require 'pi-deck-group-editor)
 
 (declare-function pi-deck-jump "pi-deck-goto" (agent))
@@ -28,7 +28,7 @@
 (defun pi-deck--menu (title entries)
   "Return a menu keymap titled TITLE with ENTRIES.
 Each entry is (LABEL FUNCTION [ENABLE [BUTTON]]); FUNCTION takes no
-arguments and BUTTON is a menu item's :button, e.g. (:radio . t).
+arguments and BUTTON is a menu item's :button, e.g. (:toggle . t).
 A nil entry is a separator; entries with ENABLE nil are omitted."
   (let ((menu (make-sparse-keymap title)) (n 0))
     (dolist (entry entries)
@@ -43,15 +43,11 @@ A nil entry is a separator; entries with ENABLE nil are omitted."
                         ,@(when (nth 3 entry) (list :button (nth 3 entry)))))))))
     menu))
 
-(defun pi-deck--auto-clear-entries (current inherited set)
-  "Return the radio entries of an auto-clear override.
-CURRENT is the override (`on', `off' or nil), INHERITED the value used
-without it, and SET a function taking the chosen override."
-  (mapcar (lambda (choice)
-            (list (format "Auto-clear finished: %s"
-                          (or choice (format "inherit (%s)" (if inherited "on" "off"))))
-                  (lambda () (funcall set choice)) t (cons :radio (eq current choice))))
-          '(nil on off)))
+(defun pi-deck--clear-finished-entry (clear set)
+  "Return the checkbox entry that clears finished children immediately.
+CLEAR is its current value and SET a function taking the new one."
+  (list "Clear finished workers and shells immediately"
+        (lambda () (funcall set (not clear))) t (cons :toggle clear)))
 
 (defun pi-deck-popup (menu &optional event)
   "Show MENU at EVENT's position (else the mouse) and run the chosen item."
@@ -69,18 +65,16 @@ without it, and SET a function taking the chosen override."
   "Return the context menu of SPACE."
   (pi-deck--menu
    (format "Space %s" space)
-   (append
-    (list (list "New agent" (pi-deck--in-space space (lambda () (pi-deck-new-agent nil))))
-          (list "New shell" (pi-deck--in-space space #'pi-deck-new-shell))
-          (list "Reopen agent" (pi-deck--in-space space #'pi-deck-reopen-agent))
-          nil
-          (list "Rename…" (pi-deck--in-space space (lambda () (call-interactively #'pi-deck-rename-space))))
-          (list "Close" (lambda () (pi-deck-close-space space)))
-          nil)
-    (pi-deck--auto-clear-entries
-     (plist-get (pi-deck-space space) :auto-clear)
-     (pi-deck-auto-clear-inherited space)
-     (lambda (value) (pi-deck-set-space-auto-clear space value))))))
+   (list (list "New agent" (pi-deck--in-space space (lambda () (pi-deck-new-agent nil))))
+         (list "New shell" (pi-deck--in-space space #'pi-deck-new-shell))
+         (list "Reopen agent" (pi-deck--in-space space #'pi-deck-reopen-agent))
+         nil
+         (list "Rename…" (pi-deck--in-space space (lambda () (call-interactively #'pi-deck-rename-space))))
+         (list "Close" (lambda () (pi-deck-close-space space)))
+         nil
+         (pi-deck--clear-finished-entry
+          (plist-get (pi-deck-space space) :clear-finished)
+          (lambda (clear) (pi-deck-set-space-clear-finished space clear))))))
 
 ;;;; Groups and the status summary
 
@@ -94,10 +88,9 @@ without it, and SET a function taking the chosen override."
      ("Edit members…" ,(lambda () (pi-deck-edit-group group)))
      ("Dissolve group" ,(lambda () (pi-deck-dissolve-group group)))
      nil
-     ,@(pi-deck--auto-clear-entries
-        (alist-get group pi-deck--group-auto-clear nil nil #'equal)
-        pi-deck-auto-clear-finished
-        (lambda (value) (pi-deck-set-group-auto-clear group value))))))
+     ,(pi-deck--clear-finished-entry
+       (and (member group pi-deck--group-clear-finished) t)
+       (lambda (clear) (pi-deck-set-group-clear-finished group clear))))))
 
 (defun pi-deck-summary-menu ()
   "Return the context menu of the sidebar's status summary."
@@ -105,8 +98,9 @@ without it, and SET a function taking the chosen override."
    "Agents"
    `(("Next agent needing attention" pi-deck-next-attention)
      nil
-     ("Auto-clear finished workers and shells by default"
-      pi-deck-toggle-auto-clear-finished t (:toggle . ,pi-deck-auto-clear-finished)))))
+     ("Clear finished workers and shells immediately in all spaces"
+      pi-deck-toggle-clear-finished-immediately t
+      (:toggle . ,pi-deck-clear-finished-immediately)))))
 
 ;;;; Agents
 

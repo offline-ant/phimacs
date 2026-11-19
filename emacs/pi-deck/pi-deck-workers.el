@@ -28,6 +28,7 @@
 (declare-function pi-deck--client-frames "pi-deck-daemon" ())
 (declare-function pi-deck--remove-views "pi-deck-close" (buffers))
 (declare-function pilish-view-session-file "pilish" (file))
+(declare-function pi-deck-clear-finished-child-p "pi-deck-clear-immediately" (parent))
 
 (defcustom pi-deck-show-panels t
   "Whether terminals (panels) started by an agent are shown at once.
@@ -120,14 +121,16 @@ their parent's space; they and workers are only listed in the sidebar."
 ;;;; Closing
 
 (defun pi-deck--remember-worker (agent)
-  "Remember closed worker AGENT under its parent when it has a session file."
+  "Remember closed worker AGENT under its parent when it has a session file.
+Where the parent's children are cleared immediately, remember nothing."
   (let ((file (pi-deck-agent-session-file agent))
         (parent (pi-deck-agent-parent agent)))
     ;; Disconnecting a task-owned view is not worker completion. Preserve
     ;; transcript records only after the owning frontend confirms termination.
     (when (and (stringp file) (file-readable-p file) (buffer-live-p parent)
                (let ((runtime (pi-deck-agent-runtime agent)))
-                 (or (null runtime) (equal (plist-get runtime :state) "stopped"))))
+                 (or (null runtime) (equal (plist-get runtime :state) "stopped")))
+               (not (pi-deck-clear-finished-child-p parent)))
       (push (list :name (pi-deck-agent-name agent) :parent parent
                   :session-file file :directory (pi-deck-agent-directory agent)
                   :time (float-time))

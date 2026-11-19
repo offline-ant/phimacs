@@ -18,7 +18,7 @@ for Pi sessions via Pilish. User documentation: `README.md`.
 | `pi-deck-sidebar.el` | sidebar space tree, incremental text/property refresh, header summary and global cleanup button beside `pi-deck-sidebar-header-items`, shared width, narrow-frame hiding and preferences |
 | `pi-deck-group-editor.el` | bottom side window for staged group creation and membership; rename and dissolve commands |
 | `pi-deck-group-rows.el` | band face, terminal-cell layout, separate hover targets and status visits for group bands |
-| `pi-deck-auto-clear.el` | scoped auto-clear setting (space > group > default) and clearing a parent's finished children after its seen run end |
+| `pi-deck-clear-immediately.el` | opt-in immediate clearing of agent-started children as they finish (space, group or global), closing exited panels through global cleanup |
 | `pi-deck-usage.el` | optional foldable sidebar usage section: background `pi-deck-usage-command` runs, JSON validation, last-good numbers per account, bar rows |
 | `pi-deck-finished.el` | global finished-worker record and exited-shell cleanup, inactive/active sidebar header button |
 | `pi-deck-menus.el` | popup menus: right-click menus for agents, closed workers, spaces, group bands and the header summary; forking (`pi-deck-fork`) |
@@ -34,7 +34,7 @@ for Pi sessions via Pilish. User documentation: `README.md`.
 | `test/pi-deck-{status,layout,ui,close,orchestration,persistence}-test.el` | Imported suite parts: status model; spaces/panes; sidebar/title bars/menus; closing; workers/forks/panels; saved state/daemon |
 | `test/pi-deck-sidebar-test.el` | Stable sidebar, focus and finished-fold cleanup regressions |
 | `test/pi-deck-group-{model,editor,sidebar}-test.el` | group persistence, mouse/keyboard checklist, band layout, folding and direct status visits |
-| `test/pi-deck-auto-clear-test.el` | Auto-clear resolution, menus, persistence and the seen-run-end trigger |
+| `test/pi-deck-clear-immediately-test.el` | Clear resolution, menu checkboxes, persistence, skipped worker records, closed agent panels and kept user shells |
 | `test/pi-deck-usage-test.el` | Usage rows at sidebar width, kept numbers and errors, folding, real `sh` fetches and stop |
 | `test/pi-deck-available-test.el` | Available runtime rows, new marks across service restarts, watch start/stop |
 | `test/pi-deck-disclosure-test.el` | UI-lane space disclosure and live/finished worker-title regressions |
@@ -42,7 +42,7 @@ for Pi sessions via Pilish. User documentation: `README.md`.
 | `test/smoke.mjs`, `test/smoke.el` (root `test/support/faux.ts`) | real Pi smoke in a disposable daemon/TTY |
 
 Dependency order: core → spaces → runtime → available → group-rows → workers → close →
-finished → auto-clear → group-editor → headers → sidebar → usage → menus →
+finished → clear-immediately → group-editor → headers → sidebar → usage → menus →
 goto/notify/layout/persist → restart/daemon/menu → pi-deck. No cycles; forward
 references use `declare-function`.
 
@@ -110,12 +110,14 @@ references use `declare-function`.
 - Group bands use `pi-deck-group-band`'s own backgrounds, never a borrowed theme
   face: themes often separate the inactive mode line only by a box, which text
   terminals do not draw.
-- Auto-clear runs on `pi-deck-update-hook`, never a timer, and acts only on an
-  agent's change to status `idle` that the previous check saw (agents first met
-  idle only record it). It clears that parent's own worker records and finished
-  terminals through `pi-deck-close-finished-terminals`, the global cleanup path.
-  Space overrides live in `:auto-clear` on space records, group overrides in
-  `pi-deck--group-auto-clear` (moved by rename, pruned when the group empties).
+- Immediate clearing is off by default and applies only to children with a
+  parent. It is on when any of `:clear-finished` on the parent's home space
+  record, that space's group in `pi-deck--group-clear-finished` (moved by rename,
+  pruned when the group empties) or `pi-deck-clear-finished-immediately` says so.
+  `pi-deck--remember-worker` then stores no record. Exited terminals close from
+  `pi-deck-update-hook` (never a timer) through `pi-deck-close-finished-terminals`,
+  the global cleanup path; `pi-deck--clear-held` keeps closing and failed ones
+  from being closed again, so a failure is reported once.
 - Sidebar/header ✕, menus and keys use one unconfirmed global Close
   (`pi-deck-close-agent`). Hide (`pi-deck-hide-pane`) changes layout only.
   Close space closes agents and owned descendants before forgetting its layout.

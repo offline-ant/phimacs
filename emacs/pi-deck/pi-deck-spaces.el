@@ -40,12 +40,12 @@ that integration, so its status needs its own prompt marks."
 
 (defvar pi-deck-spaces nil
   "Registered spaces in creation order, with :name, :dir and optional :group.
-A nil group means the space is ungrouped.  An optional :auto-clear of `on'
-or `off' overrides the space's inherited finished-entry auto-clear.")
+A nil group means the space is ungrouped.  A non-nil :clear-finished clears
+the children its agents start as soon as they finish.")
 
-(defvar pi-deck--group-auto-clear nil
-  "Alist of group names and their auto-clear override, `on' or `off'.
-An entry lives only while its group has members.")
+(defvar pi-deck--group-clear-finished nil
+  "Names of the groups whose spaces clear finished children immediately.
+A name stays only while its group has members.")
 
 (defvar pi-deck--layouts nil
   "Alist of space names and their last known writable window states.
@@ -82,17 +82,18 @@ Nil means ghostel's default shell.")
 
 (cl-defun pi-deck--register-space
     (name dir &optional (group (plist-get (pi-deck-space name) :group))
-          (auto-clear (plist-get (pi-deck-space name) :auto-clear)))
+          (clear-finished (plist-get (pi-deck-space name) :clear-finished)))
   "Register space NAME with directory DIR and optional sidebar GROUP.
-AUTO-CLEAR is its override, `on', `off' or nil to inherit.  Replacing an
-older entry keeps its group and override unless they are supplied."
+Non-nil CLEAR-FINISHED clears its agents' children as they finish.
+Replacing an older entry keeps its group and clear flag unless they are
+supplied."
   (setq pi-deck-spaces
         (append (cl-remove name pi-deck-spaces
                            :key (lambda (space) (plist-get space :name)) :test #'equal)
                 (list (list :name name :dir (and dir (file-name-as-directory
                                                       (expand-file-name dir)))
                             :group (pi-deck--group-name group)
-                            :auto-clear (car (memq auto-clear '(on off))))))))
+                            :clear-finished (and clear-finished t))))))
 
 (defun pi-deck-group-members (group)
   "Return the names of GROUP's member spaces in registry order."
@@ -118,14 +119,12 @@ layouts and current space alone.  Return non-nil if membership changed."
              unless (equal old new)
              do (setf (plist-get (car tail) :group) new)
              (setq changed t))
-    ;; A renamed group keeps its override; an emptied group loses it.
-    (when-let* (((and original group (not (equal original group))))
-                (cell (assoc original pi-deck--group-auto-clear))
-                ((not (assoc group pi-deck--group-auto-clear))))
-      (setcar cell group))
-    (setq pi-deck--group-auto-clear
-          (seq-filter (lambda (cell) (pi-deck-group-members (car cell)))
-                      pi-deck--group-auto-clear))
+    ;; A renamed group keeps its clear flag; an emptied group loses it.
+    (when (and original group (member original pi-deck--group-clear-finished))
+      (setq pi-deck--group-clear-finished
+            (cl-adjoin group pi-deck--group-clear-finished :test #'equal)))
+    (setq pi-deck--group-clear-finished
+          (seq-filter #'pi-deck-group-members pi-deck--group-clear-finished))
     (when changed (pi-deck--schedule-update))
     changed))
 
