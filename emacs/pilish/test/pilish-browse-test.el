@@ -10986,18 +10986,22 @@ collects echo-area output.  Deferred reads run synchronously."
                    ((symbol-function 'message)
                     (lambda (fmt &rest args)
                       (push (apply #'format fmt args) ,messages))))
-           (pilish--tree-browser-fetch-and-render)
-           ,@body)))))
+           (save-window-excursion
+             (pilish--tree-browser-fetch-and-render)
+             ,@body))))))
 
 (ert-deftest pilish-test-navigate-runtime-moves-leaf-then-prefills ()
   "A shared runtime moves its own leaf; the live snapshot drives the view.
 RET sends the context-bound navigation command for the ORIGINAL entry,
 never rewriting the file.  Its response triggers one authoritative
-snapshot.  The old draft becomes recoverable input, and the prefill
-follows the snapshot that lands on the target's navigation marker."
+snapshot.  The old draft becomes recoverable input, the prefill
+follows the snapshot that lands on the target's navigation marker, and
+the browser's pop-up window closes."
   (pilish-test--with-runtime-nav chat input proc commands messages
+    (delete-other-windows)
     (cl-letf (((symbol-function 'pilish--browse-rewrite-session-file)
                (lambda (&rest _) (error "Shared navigation rewrote the file"))))
+      (pop-to-buffer (current-buffer) '(display-buffer-pop-up-window))
       (pilish--browse-navigate "u2")
       (let ((prompt (car commands)))
         (should (equal (plist-get prompt :type) "prompt"))
@@ -11024,13 +11028,18 @@ follows the snapshot that lands on the target's navigation marker."
       (should (equal (plist-get (car (pilish-session-quarantine chat)) :draft)
                      "old draft"))
       (should (member "Pi: Continued from selected turn: try the other way"
-                      messages)))))
+                      messages))
+      (should (one-window-p))
+      (should-not (get-buffer-window (current-buffer))))))
 
 (ert-deftest pilish-test-navigate-runtime-reports-extension-error-on-mismatch ()
   "A handler failure arrives as `extension_error' before a handled response.
 The snapshot still ends on the old leaf, so navigation reports that
-error instead of success and keeps the draft without prefilling."
+error instead of success, keeps the draft without prefilling and
+leaves the browser displayed."
   (pilish-test--with-runtime-nav chat input proc commands messages
+    (delete-other-windows)
+    (pop-to-buffer (current-buffer) '(display-buffer-pop-up-window))
     (pilish--browse-navigate "u2")
     (let ((prompt (car commands)))
       (pilish-test--stdout
@@ -11049,6 +11058,7 @@ error instead of success and keeps the draft without prefilling."
                               (string-prefix-p "Pi: Continued" text))
                             messages))
     (should (equal (with-current-buffer input (buffer-string)) "old draft"))
+    (should (eq (window-buffer) (current-buffer)))
     (should-not (buffer-local-value 'pilish--extension-command-error-watch chat))))
 
 (ert-deftest pilish-test-navigate-runtime-summarizes-only-on-request ()

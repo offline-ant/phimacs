@@ -1556,8 +1556,9 @@ judges the move by that snapshot's leaf: the target itself, or the branch
 summary or =pimux:navigate-tree= marker the runtime appended to it.  A
 handler failure reported as =extension_error= is shown when the leaf did not
 move.  The tree-changed snapshot suspends the old draft as recoverable input;
-the prefill follows the live snapshot, and the tree browser refreshes onto
-the new current entry.  Marker entries are bookkeeping: the tree and chat
+the prefill follows the live snapshot.  The tree browser refreshes onto the
+new current entry and its window closes; a failed move leaves it open.
+Marker entries are bookkeeping: the tree and chat
 never show them.
 
 For a path-changing continuation in explicit unshared mode, Pilish

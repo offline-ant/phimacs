@@ -5244,6 +5244,7 @@ rebuilds the chat.  The tree-changed snapshot suspends the old draft as
 recoverable input, so the prefill follows the live snapshot."
   (let* ((context (pilish--capture-input-context proc))
          (browser (current-buffer))
+         (browser-window (selected-window))
          (watch (list pilish--runtime-tree-navigate-command))
          (text (format "/%s %s%s" pilish--runtime-tree-navigate-command
                        (if summarize "--summarize " "") node-id))
@@ -5270,7 +5271,7 @@ recoverable input, so the prefill follows the live snapshot."
                   proc chat-buf generation
                   (lambda ()
                     (pilish--browse-finish-runtime-navigation
-                     chat-buf browser node-id target approval
+                     chat-buf browser browser-window node-id target approval
                      (or (cdr watch)
                          (and (not (eq (plist-get response :success) t))
                               (or (plist-get response :error)
@@ -5291,12 +5292,14 @@ recoverable input, so the prefill follows the live snapshot."
        (signal (car err) (cdr err))))))
 
 (defun pilish--browse-finish-runtime-navigation
-    (chat-buf browser node-id target approval failure)
+    (chat-buf browser browser-window node-id target approval failure)
   "Report CHAT-BUF's live runtime navigation to NODE-ID's TARGET.
 CHAT-BUF is current and holds the authoritative snapshot.  A leaf that
 did not land on TARGET reports FAILURE (the captured extension error or
-failed response), never success.  A landed move prefills TARGET's text
-unless a newer draft than APPROVAL exists, then refreshes BROWSER."
+failed response), never success, and leaves BROWSER open.  A landed move
+prefills TARGET's text unless a newer draft than APPROVAL exists,
+refreshes BROWSER onto the new current entry and quits BROWSER-WINDOW
+when it still shows BROWSER."
   (let ((input-buf pilish--input-buffer))
     (if (not (pilish--browse-runtime-navigation-landed-p
               (plist-get pilish--state :entries)
@@ -5314,7 +5317,10 @@ unless a newer draft than APPROVAL exists, then refreshes BROWSER."
             (pilish--browse-navigate-message node-id)
             (when (and (derived-mode-p 'pilish-tree-browser-mode)
                        (eq pilish--chat-buffer chat-buf))
-              (pilish--tree-browser-fetch-and-render t))))
+              (pilish--tree-browser-fetch-and-render t))
+            (when (and (window-live-p browser-window)
+                       (eq (window-buffer browser-window) browser))
+              (quit-window nil browser-window))))
         (cond
          ((not replace-draft-p)
           (message (concat "Pi: Continued from selected turn; kept newer "
