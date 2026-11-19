@@ -17,9 +17,7 @@ coding agents in Emacs, inspired by Herdr. It uses
 the parts around it. I made it mostly mouse-driven: frankly, working with AI
 has made me rusty with keyboard shortcuts.
 
-[![Two project spaces grouped as Trail Map. A result dot opens the finished agent’s answer while the group stays folded.](docs/demo/space-groups.gif)](docs/demo/README.md)
-
-[Watch two workers fix failing tests in parallel.](docs/demo/README.md#parallel-workers)
+[![Phimacs demo](docs/demo/phimacs.gif)](docs/demo/README.md)
 
 ## What it adds
 
