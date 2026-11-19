@@ -17,18 +17,24 @@ coding agents in Emacs, inspired by Herdr. It uses
 the parts around it. I made it mostly mouse-driven: frankly, working with AI
 has made me rusty with keyboard shortcuts.
 
+I work with my agents in Emacs, but Emacs doesn't run them. A background
+service, [pimux](packages/pimux/README.md), does. I can close Emacs while an
+agent works, then open that same agent on my phone in
+[Tau](docs/install.md#tau-experimental); it is the same running chat, not a
+copy. The [orchestration tools](packages/orchestration/README.md) start workers
+in pimux too, so they show under their parent in Emacs and in Tau. In the demo,
+one agent gives two failing tests to two workers that run in parallel.
+
 [![Phimacs demo](docs/demo/phimacs.gif)](docs/demo/README.md)
 
 ## What it adds
 
+- **Agents that keep running.** Closing Emacs or losing an SSH connection
+  leaves them running; Close stops an agent. When pimux starts again, for
+  example after a reboot, your chats come back idle. Workers and unfinished
+  tasks do not come back.
 - **Project spaces.** Each project has its own space with its own window
-  layout. A sidebar lists all agents and shows which ones need you. You can
-  [group related spaces](emacs/pi-deck/README.md#space-groups) and jump to a
-  result even when its group is folded.
-- **Agents that keep running.** A background service, pimux, runs the agents.
-  Closing Emacs or losing an SSH connection leaves them running. Use Close to
-  stop an agent. When the service starts again, for example after a reboot,
-  your chats come back idle. Workers and unfinished tasks do not come back.
+  layout. A sidebar lists all agents and shows which ones need you.
 - **Workers.** An agent can give a task to a helper agent, a "worker":
   - `do` forks the current chat. The worker knows everything said so far, does
     the task, and only its final answer goes back to the agent.
@@ -45,11 +51,11 @@ has made me rusty with keyboard shortcuts.
 
 ## Agent tools
 
-Phimacs adds these tools to Pi. The table shows what each setup command turns
-on in a fresh install; a tool selection that you saved with `/tools` still
+Phimacs adds these tools to Pi. The *Complete setup* column shows what
+`phimacs setup` turns on; a selection that you saved with `/tools` still
 applies. Each package's README explains its tools.
 
-| Package | Tools | `phimacs setup` (Emacs) | `phimacs setup pi` (Herdr, tmux) |
+| Package | Tools | Complete setup | Plain Pi (`phimacs setup pi`) |
 |---|---|---|---|
 | [orchestration](packages/orchestration/README.md) | `do`, `microdo`, `delegate`: give a task to a worker. `panel-start`, `panel-read`, `panel-send`, `panel-close`: terminals for the agent. `wait`: wait for output or a process. | on | on |
 | [extensions](packages/extensions/README.md) | `ask`: ask you a question. `py`: run a short Python script. `prompt_history`: read an earlier prompt. `self_compact`: the agent summarizes a long chat and continues. `/tools`: choose which tools are on. Safety checks for shell commands. | [add it](docs/install.md#optional-pi-packages) | on |
@@ -78,7 +84,9 @@ branch; the v0.1.0 release does not have all the features shown here.
 
 **With a coding agent:** point it at the [installation guide](docs/install.md).
 
-**Without Emacs:** the agent tools also work in plain `pi` in Herdr or tmux; see
+**Without Emacs:** the same tools also work in plain `pi` in Herdr or tmux.
+There, workers and terminals open as panes instead of running in pimux, so Tau
+does not see them. See
 [Pi in Herdr or tmux](docs/install.md#pi-in-herdr-or-tmux-without-emacs).
 
 ### Complete Emacs setup
@@ -120,18 +128,6 @@ from other computers.
 Install only the packages that you want with `use-package :vc`. You do not need
 the theme, completion or keys of the complete setup. See
 [existing Emacs configuration](docs/install.md#existing-emacs-configuration).
-
-## How the parts fit together
-
-```mermaid
-flowchart LR
-  emacs["Emacs<br/>chats, spaces, terminals"] --> pimux["pimux<br/>keeps agents running"]
-  pimux --> agents["Pi agents<br/>with Phimacs tools"]
-  agents --> models["Model providers"]
-```
-
-pimux runs the agents, and Emacs only shows them. You can also open Emacs from
-another computer over SSH; see the [installation guide](docs/install.md#other-devices).
 
 ## License
 

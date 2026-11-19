@@ -8,6 +8,7 @@ optional profile -> reusable Lisp packages + pinned third-party UI
 phimacs launcher -> pimux service + profile Emacs daemon (start or attach)
 pimux service -> per-agent owner -> selected published Pi
 Pilish clients --private Unix sockets-- per-agent owner
+Tau (experimental browser frontend) --same sockets-- per-agent owner
 device phimacs client --SSH--> host phimacs; shared device sockets -> sound
 ```
 
