@@ -1,5 +1,7 @@
 # Phimacs
 
+> &lt;human-written&gt;
+>
 > **Why this exists:** For a long time I used [Herdr](https://herdr.dev), a
 > terminal workspace for coding agents. When Emacs turned 50, I went back to
 > Emacs and rebuilt, as Emacs packages, the Herdr features that I use. I
@@ -14,6 +16,8 @@
 > a carefully planned project that I plan to maintain for use cases other than my
 > own. Its primary purpose is to be a repository I can point people to when they
 > want to skim it, clone it or reuse my ideas.
+>
+> &lt;/human-written&gt;
 
 Phimacs is my opinionated setup for [Pi](https://github.com/earendil-works/pi-mono)
 coding agents in Emacs, inspired by Herdr. It uses
