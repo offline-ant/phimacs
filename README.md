@@ -8,8 +8,12 @@
 > agents over the past year into this one repository, to make my setup easy to
 > try.
 >
-> AI agents wrote all of my code for Phimacs; I wrote none of it by hand. I added each
-> part when I needed it, to solve a problem that I had.
+> Phimacs is the result of solving problems that I had; I added each part when I
+> needed it. AI agents wrote all of the code; none of it was written by me. They
+> also wrote all of the text; I proofread only some of this README. So this isn't
+> a carefully planned project that I plan to maintain for use cases other than my
+> own. Its primary purpose is to be a repository I can point people to when they
+> want to skim it, clone it or reuse my ideas.
 
 Phimacs is my opinionated setup for [Pi](https://github.com/earendil-works/pi-mono)
 coding agents in Emacs, inspired by Herdr. It uses
