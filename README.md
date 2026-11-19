@@ -38,6 +38,8 @@ has made me rusty with keyboard shortcuts.
   can see and use too.
 - **[Tau (experimental)](docs/install.md#tau-experimental).** I don't use it
   much, but it lets me check in on the same agents from my phone's browser.
+
+  <a href="docs/install.md#tau-experimental"><img src="docs/demo/tau-phone.png" width="240" alt="Tau on a phone: an agent in the stats project explains two failing tests"></a>
 - **Dictation (optional).** Speak into the chat input or any Emacs buffer: click
   the 🎤 button or press a key. It needs a speech-to-text server.
 
