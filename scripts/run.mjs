@@ -6,7 +6,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { childEnvironment, inspectEnvironment, parseOptions } from './emacs-environment.mjs';
+import { childEnvironment, detachedEnvironment, inspectEnvironment, parseOptions } from './emacs-environment.mjs';
 import { checkDaemonStop, ensureDaemon, openFrame, privateDirectory, probe, stopDaemon } from './emacs-launch.mjs';
 import { runtimeEnvironment, runtimePaths } from './runtime.mjs';
 import { describeService, ensureService, serviceEnvironment, stopAll } from './service.mjs';
@@ -17,7 +17,8 @@ import { collectStatus, formatStatus } from './status.mjs';
 
 export const USAGE = `Usage: phimacs [--gui | --no-frame] [-- EMACSCLIENT-ARGUMENTS]
        phimacs setup [pi [--browser] [--sound]] | status [--json] | stop [--force] | pi [PI-ARGUMENTS]
-       phimacs service pimux|emacs | pimux ARGUMENTS | share | client [install [FILE]]
+       phimacs service pimux|emacs | service tau [TAU-ARGUMENTS]
+       phimacs pimux ARGUMENTS | share | client [install [FILE]]
 Prefix --local to ignore PHIMACS_HOST.`;
 
 class UsageError extends Error {}
@@ -88,18 +89,27 @@ async function frame(argv, env) {
 async function service(argv, env) {
   const options = parseOptions([], env);
   const runtime = runtimePaths(options.root, env);
+  if (argv[0] === 'tau') {
+    const entry = path.join(runtime.root, 'packages/tau/bin/tau.js');
+    if (!fs.existsSync(entry)) throw new Error('Tau is not compiled; run npm run compile in the Phimacs checkout');
+    // The frontend may listen before the selected pimux is ready. Never start it here.
+    process.execve(process.execPath, [process.execPath, entry, ...argv.slice(1)],
+      { ...runtimeEnvironment(runtime, detachedEnvironment(env)), PHIMACS_STATE_DIR: options.state, PHIMACS_SERVER_SOCKET: options.socket });
+  }
+  if (argv.length !== 1 || !['pimux', 'emacs'].includes(argv[0])) {
+    throw new UsageError('Usage: phimacs service pimux|emacs | phimacs service tau [TAU-ARGUMENTS]');
+  }
   await prepareState(options);
-  if (argv.length !== 1) throw new UsageError('Usage: phimacs service pimux|emacs');
   if (argv[0] === 'pimux') {
     // Exec keeps the PID, so a supervisor signals and observes the service itself.
     process.execve(process.execPath, [process.execPath, runtime.pimux, 'serve'], serviceEnvironment(runtime, options.state, env));
-  } else if (argv[0] === 'emacs') {
+  } else {
     const report = await startPreflight(env)(options);
     if (!report.ok) throw new Error(report.issues.join('\n'));
     await privateDirectory(path.dirname(options.socket));
     process.execve(which(options.emacs, env), [options.emacs, `--init-directory=${path.join(runtime.root, 'emacs/config')}`,
       `--fg-daemon=${options.socket}`], childEnvironment(options, env, { display: true }));
-  } else throw new UsageError('Usage: phimacs service pimux|emacs');
+  }
   throw new Error('Service exec returned without replacing the launcher');
 }
 

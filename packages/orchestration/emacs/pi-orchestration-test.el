@@ -128,6 +128,69 @@
       (pi-orchestration--close "panel-b")
       (kill-buffer root))))
 
+(ert-deftest pi-orchestration-start-resolves-an-exact-discovered-parent ()
+  (let* ((endpoint "/tmp/test-orchestration.sock")
+         (parent-id "tau-root")
+         (ref (list :host "emacs" :endpoint endpoint :id parent-id))
+         (parent-runtime (list :protocol 2 :mux-id "parent-mux" :orchestration ref))
+         (wrong-endpoint (list :protocol 2 :mux-id "other-mux"
+                               :orchestration (plist-put (copy-sequence ref) :endpoint "/tmp/other.sock")))
+         (unsupported (list :protocol 1 :mux-id "legacy-mux" :orchestration ref))
+         (child-data (list :id "child" :endpoint endpoint :spec
+                           (list :kind "pi" :name "worker" :cwd "/tmp/" :placement "worker" :parent ref
+                                 :runtime '(:protocol 2 :muxId "child-mux" :socket "/tmp/worker.sock"
+                                            :pid 100 :piPid 101 :sessionFile "/tmp/worker.jsonl" :state "committed")
+                                 :process '(:pid 101 :startTime "123" :bootId "boot"))))
+         (pi-orchestration--roots (make-hash-table :test 'equal))
+         (pi-orchestration--targets (make-hash-table :test 'equal))
+         (parent-view (generate-new-buffer " *attached root*"))
+         (child-view (generate-new-buffer " *attached worker*"))
+         discovered requested observed-parent
+         (pi-orchestration-target-functions
+          (list (lambda (_id event)
+                  (when (eq event 'start)
+                    (setq observed-parent
+                          (plist-get (car (pi-orchestration-targets)) :parent)))))))
+    (unwind-protect
+        (cl-letf (((symbol-function 'pilish-list-runtimes) (lambda () discovered))
+                  ((symbol-function 'pilish-start-session)
+                   (lambda (&rest _) (ert-fail "must never start the parent")))
+                  ((symbol-function 'pilish-session-runtime) (lambda (_) nil))
+                  ((symbol-function 'pilish-session-process) (lambda (_) nil))
+                  ((symbol-function 'pilish-attach-runtime)
+                   (lambda (runtime &optional _name)
+                     (push (plist-get runtime :mux-id) requested)
+                     (if (equal (plist-get runtime :mux-id) "child-mux") child-view parent-view))))
+          ;; Zero matches or two exact matches leave the worker independent of
+          ;; an unknown parent view. Neither a root ID alone nor protocol 1 binds it.
+          (dolist (snapshot (list (list unsupported wrong-endpoint)
+                                  (list parent-runtime (plist-put (copy-sequence parent-runtime) :mux-id "ambiguous"))))
+            (setq discovered snapshot requested nil)
+            (pi-orchestration--start child-data)
+            (should (equal requested '("child-mux")))
+            (should-not (pi-orchestration-parent-buffer parent-id))
+            (should-not observed-parent)
+            (pi-orchestration--close "child" nil "child-mux"))
+          ;; Pilish returns an already-open view if it has this identity. The
+          ;; exact target must be registered before observers place the child.
+          (setq discovered (list wrong-endpoint unsupported parent-runtime) requested nil)
+          (pi-orchestration--start child-data)
+          (should (equal requested '("parent-mux" "child-mux")))
+          (should (eq (pi-orchestration-parent-buffer parent-id) parent-view))
+          (should (eq observed-parent parent-view))
+          (should (equal (pi-orchestration--root-id parent-view) parent-id))
+          (pi-orchestration--close "child" nil "child-mux")
+          ;; Subsequent children use the registered view without rediscovery.
+          (setq requested nil)
+          (cl-letf (((symbol-function 'pilish-list-runtimes)
+                     (lambda () (ert-fail "a live native root does not need discovery"))))
+            (pi-orchestration--start child-data))
+          (should (equal requested '("child-mux")))
+          (should (eq observed-parent parent-view))
+          (pi-orchestration--close "child" nil "child-mux"))
+      (kill-buffer parent-view)
+      (kill-buffer child-view))))
+
 (ert-deftest pi-orchestration-root-id-survives-a-rename ()
   "A session move renames its chat; workers still find their parent."
   (let* ((pi-orchestration--targets (make-hash-table :test 'equal))

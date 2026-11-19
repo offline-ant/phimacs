@@ -38,15 +38,19 @@ test("source packages share one root workspace lock", () => {
     .map((entry) => `packages/${entry.name}`).sort();
   assert.deepEqual(sourcePackages, [...workspacePaths].sort());
   const lock = JSON.parse(fs.readFileSync(path.join(root, "package-lock.json"), "utf8"));
-  assert.deepEqual([...workspaceNames].sort(), ["@phimacs/browser", "@phimacs/extensions", "@phimacs/orchestration", "@phimacs/pimux", "@phimacs/sound"]);
-  for (const [directory, name] of [["pagent", "pagent"], ["tau", "@phimacs/tau"]]) {
-    assert.equal(workspaceNames.has(name), false);
-    assert.equal(fs.existsSync(path.join(root, "packages", directory)), false);
-    assert.equal(Object.hasOwn(lock.packages, `packages/${directory}`), false);
-    assert.equal(Object.hasOwn(lock.packages, `node_modules/${name}`), false);
-    for (const { manifest } of packages) {
-      for (const group of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
-        assert.equal(Object.hasOwn(manifest[group] ?? {}, name), false, `${manifest.name} depends on excluded ${name}`);
+  assert.deepEqual([...workspaceNames].sort(), ["@phimacs/browser", "@phimacs/extensions", "@phimacs/orchestration", "@phimacs/pimux", "@phimacs/sound", "@phimacs/tau"]);
+  assert.deepEqual(lock.packages[""].workspaces, workspacePaths);
+  assert.equal(fs.existsSync(path.join(root, "packages/pagent")), false);
+  assert.equal(Object.hasOwn(lock.packages, "packages/pagent"), false);
+  assert.equal(Object.hasOwn(lock.packages, "node_modules/pagent"), false);
+  for (const { directory, manifest } of packages) {
+    const relative = path.relative(root, directory);
+    assert.deepEqual(lock.packages[`node_modules/${manifest.name}`], { resolved: relative, link: true });
+    assert.equal(lock.packages[relative].version, manifest.version);
+    for (const group of ["dependencies", "devDependencies", "peerDependencies", "optionalDependencies"]) {
+      assert.deepEqual(lock.packages[relative][group], manifest[group]);
+      for (const name of ["pagent", "@phimacs/tau"]) {
+        assert.equal(Object.hasOwn(manifest[group] ?? {}, name), false, `${manifest.name} must not depend on ${name}`);
       }
     }
   }
@@ -57,7 +61,7 @@ test("external requirements are exact and internal dependencies resolve locally"
     for (const group of ["dependencies", "devDependencies"]) {
       for (const [name, version] of Object.entries(manifest[group] ?? {})) {
         if (workspaceNames.has(name)) {
-          assert.ok(version === "*" || version === packages.find(item => item.manifest.name === name)!.manifest.version);
+          assert.equal(version, packages.find(item => item.manifest.name === name)!.manifest.version);
         } else assert.match(String(version), /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/, `${manifest.name} ${name} must be exact`);
       }
     }
@@ -70,7 +74,7 @@ test("external requirements are exact and internal dependencies resolve locally"
 });
 
 test("original MIT components and Lisp packages name offline-ant as copyright holder", () => {
-  const components = [".", "emacs/config", "emacs/pi-deck", ...workspacePaths];
+  const components = [".", "emacs/config", "emacs/pi-deck", ...workspacePaths.filter(directory => directory !== "packages/tau")];
   for (const component of components) {
     const license = fs.readFileSync(path.join(root, component, "LICENSE"), "utf8");
     assert.match(license, /^MIT License\n\nCopyright \(c\) \d{4} offline-ant\n/, `${component}/LICENSE`);
@@ -78,6 +82,15 @@ test("original MIT components and Lisp packages name offline-ant as copyright ho
   for (const file of ["emacs/pi-deck/pi-deck.el", "packages/orchestration/emacs/pi-orchestration.el", "packages/sound/emacs/pi-sound.el"]) {
     assert.match(fs.readFileSync(path.join(root, file), "utf8"), /^;; Author: offline-ant$/m, file);
   }
+});
+
+test("Tau is a private frontend and preserves the upstream MIT grant", () => {
+  const tau = packages.find(({ manifest }) => manifest.name === "@phimacs/tau")!;
+  assert.equal(tau.directory, path.join(root, "packages/tau"));
+  assert.equal(tau.manifest.private, true);
+  assert.equal(tau.manifest.license, "MIT");
+  assert.match(fs.readFileSync(path.join(tau.directory, "LICENSE"), "utf8"), /^MIT License\n\nCopyright \(c\) 2026 deflating\n/);
+  assert.match(fs.readFileSync(path.join(tau.directory, "NOTICE.md"), "utf8"), /github\.com\/milanglacier\/pi-tau-web-server/);
 });
 
 test("incorporated Pilish source keeps its GPL and recorded upstream identity", () => {

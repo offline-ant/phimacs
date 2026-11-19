@@ -1,0 +1,28 @@
+{
+  "name": "@phimacs/tau",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./bin/tau.js",
+  "type": "module",
+  "description": "Phimacs browser frontend, based on Tau",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "pi-tau-web-server": "./bin/tau.js"
+  },
+  "scripts": {
+    "compile": "tsc -p tsconfig.server.json && tsc -p tsconfig.public.json && node scripts/copy-katex.ts && node scripts/copy-highlight.ts",
+    "check": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.public.json --noEmit && tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@phimacs/pimux": "0.1.0",
+    "@phimacs/orchestration": "0.1.0",
+    "@phimacs/sound": "0.1.0",
+    "ws": "8.21.3"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

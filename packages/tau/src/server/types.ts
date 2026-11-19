@@ -1,0 +1,88 @@
+export type JsonRecord = Record<string, unknown>;
+export type TauArgs = Record<string, string | boolean | undefined> & {
+  open?: boolean;
+  port?: string;
+  'http-port'?: string;
+  host?: string;
+  'projects-dir'?: string;
+};
+export type TauSettingsFile = {
+  tau?: {
+    port?: string | number;
+    httpPort?: string | number;
+    host?: string;
+    hostnames?: string[];
+    user?: string;
+    pass?: string;
+    authEnabled?: boolean;
+    cookieSecret?: string;
+    projectsDir?: string;
+    [key: string]: unknown;
+  };
+};
+export type TauSettings = {
+  port: number;
+  httpPort: number;
+  host: string;
+  hostnames: string[];
+  user: string;
+  pass: string;
+  authEnabled: boolean;
+  cookieSecret?: string;
+  projectsDir: string;
+};
+export type ModelIdentity = {
+  provider?: string;
+  id?: string;
+  name?: string;
+  [key: string]: unknown;
+};
+export type ParsedModelSpec = { model: ModelIdentity | null; level: string | null };
+export type RpcCommand = {
+  id?: string;
+  type?: string;
+  sessionId?: string;
+  filePath?: string;
+  outputPath?: string;
+  cwd?: string;
+  model?: string;
+  provider?: string;
+  modelId?: string;
+  level?: string;
+  name?: string;
+  enabled?: boolean;
+  [key: string]: unknown;
+};
+/**
+ * Extra Pi arguments/environment for a newly committed managed runtime.
+ * Reusing an existing runtime never reapplies these launch-only overrides.
+ * A caller can select extensions and model flags, not another host or parent task.
+ */
+export type SessionSpawnOverrides = {
+  args?: string[];
+  env?: Record<string, string>;
+};
+export type RpcResponse = JsonRecord;
+export type PendingCommand = {
+  resolve: (value: RpcResponse) => void;
+  reject: (reason: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+  command?: string;
+};
+export type PendingDialog = JsonRecord & {
+  id: string;
+  method: 'confirm' | 'select' | 'input' | 'editor';
+  createdAt: number;
+  expiresAt?: number;
+};
+export type AbortState = 'idle' | 'stopping' | 'timed_out' | 'failed';
+export type LiveClient = {
+  readyState: number;
+  bufferedAmount: number;
+  send(payload: string): void;
+  close(code?: number, reason?: string): void;
+  terminate(): void;
+  ping(): void;
+  isAlive?: boolean;
+};
+export type StatusError = Error & { status?: number; stderr?: string };

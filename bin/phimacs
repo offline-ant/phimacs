@@ -13,6 +13,7 @@
 #   phimacs pi [ARGS]                     Pi's terminal UI under the managed
 #                                         writer claim; no service or Emacs
 #   phimacs service pimux|emacs           a foreground service for a supervisor
+#   phimacs service tau [TAU-ARGS]        the optional foreground browser service
 #   phimacs pimux ARGS                    the pimux client of this checkout
 #   phimacs share                         share this device's microphone, speaker
 #                                         and notifications with PHIMACS_HOST

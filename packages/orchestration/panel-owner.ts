@@ -1,18 +1,21 @@
 import { execFile } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { processIdentityStatus, sameProcessIdentity } from "@phimacs/pimux/process-identity";
+import { processIdentityStatus, sameProcessIdentity, type ProcessIdentity } from "@phimacs/pimux/process-identity";
+import { verifyPrivateDirectory } from "@phimacs/pimux/private-files";
 import type { HostTarget } from "./host-types.ts";
 import { createEmacsHost } from "./hosts/emacs.ts";
 import { createHerdrHost } from "./hosts/herdr.ts";
 import { createTmuxHost } from "./hosts/tmux.ts";
 import { removePanelOutput } from "./panel-output.ts";
+import { savedPanelState } from "./panel-runtime.ts";
 import { isProcessIdentity } from "./parent-task.ts";
-import { claimNameForOperation, readTarget, removeTarget, saveTarget } from "./workers.ts";
+import { claimNameForOperation, listTargets, readTarget, removeTarget, saveTarget } from "./workers.ts";
 
 const execute = promisify(execFile);
 const exec: ExtensionAPI["exec"] = async (command, args, options) => {
@@ -33,6 +36,53 @@ async function closeNativePanel(target: HostTarget): Promise<void> {
     : target.host === "herdr" ? createHerdrHost(api, target.endpoint)
       : createEmacsHost(api, target.endpoint);
   await host.close(target);
+}
+
+export interface RegisteredEmacsPanel {
+  id: string;
+  name: string;
+  creator: ProcessIdentity;
+  status: "starting" | "working" | "idle";
+  error?: string;
+}
+
+/** Read panels only; native view lifetime and cleanup remain with their original host. */
+export function registeredEmacsPanels(): RegisteredEmacsPanel[] {
+  // Treat a missing or inaccessible registry as unavailable; never read a shared directory.
+  try { verifyPrivateDirectory(path.join(tmpdir(), "pi-orchestration-targets")); }
+  catch { return []; }
+  let targets: HostTarget[];
+  try { targets = listTargets(); } catch { return []; }
+  return targets.flatMap(target => {
+    const panel = target.panel;
+    if (target.kind !== "shell" || target.host !== "emacs" || !panel || !target.owner
+        || !sameProcessIdentity(target.owner, panel.creator)) return [];
+    try {
+      const state = savedPanelState(panel);
+      if (!state) return [];
+      return [{ id: panel.id, name: target.name, creator: target.owner,
+        status: state.closed || state.command === "exited" ? "idle" : state.command === "running" ? "working" : "starting",
+        error: target.closeError || state.error }];
+    } catch {
+      // A panel whose control state changed during discovery is not attachable.
+      return [];
+    }
+  });
+}
+
+/** Close this registration only, even if another panel reused its public name. */
+export async function closeRegisteredEmacsPanel(name: string, panelId: string): Promise<void> {
+  const release = await claimNameForOperation(name, AbortSignal.timeout(5000));
+  try {
+    const target = readTarget(name);
+    if (target?.kind !== "shell" || target.host !== "emacs" || target.panel?.id !== panelId
+        || !target.owner || !sameProcessIdentity(target.owner, target.panel.creator)) {
+      throw Object.assign(new Error("The panel registration changed; Close was not sent."), { status: 409 });
+    }
+    await closeNativePanel(target);
+    removePanelOutput(target.outputPath);
+    removeTarget(name);
+  } finally { release(); }
 }
 
 interface PanelOwnerServices {

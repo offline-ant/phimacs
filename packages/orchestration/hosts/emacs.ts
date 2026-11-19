@@ -82,6 +82,14 @@ export function createEmacsHost(pi: Pick<ExtensionAPI, "exec">, endpoint: string
     if (!await serverGone(endpoint)) throw error;
   }
   async function closeView(id: string, muxId?: string, taskOwned = false, panelId?: string): Promise<void> {
+    if (panelId) {
+      // A lost reply is not permission to repeat a native panel mutation.
+      try {
+        const reply = await call({ operation: "close", id, detachOnly: true, taskOwned, panelId });
+        if (reply.success !== true || reply.pending) throw new Error(`Emacs did not acknowledge panel Close for ${id}`);
+      } catch (error) { await goneWithServer(error); }
+      return;
+    }
     const deadline = Date.now() + CLOSE_PATIENCE_MS;
     for (;;) {
       let reply: EmacsReply | undefined;

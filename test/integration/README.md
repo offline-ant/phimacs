@@ -84,6 +84,14 @@ user's daemon, credentials, registry or display to make a test pass. The
 launcher's own start/attach, stop and device-sharing suites are listed in
 [development](../../docs/development.md#emacs-preparation-and-focused-checks).
 
+## Tau worker hierarchy
+
+With the same prepared Emacs, Pi and Xvfb selections, run
+`node --test test/integration/tau-worker-parent.test.mjs` after compiling Tau.
+The test starts a root through Tau's HTTP API and runs a real `do` worker with
+faux inference. Tau discovery and Emacs deck must both report that worker under
+the same root, even though the root had no Emacs view when the worker started.
+
 ## Device sharing over real OpenSSH
 
 `ssh-share.test.mjs` is an explicit opt-in lane, run after compilation. It skips

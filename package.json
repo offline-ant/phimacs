@@ -12,7 +12,8 @@
     "packages/orchestration",
     "packages/extensions",
     "packages/browser",
-    "packages/sound"
+    "packages/sound",
+    "packages/tau"
   ],
   "scripts": {
     "compile": "npm run compile --workspaces",
@@ -29,7 +30,10 @@
     "@types/node": "22.19.19",
     "@types/ws": "8.18.1",
     "typebox": "1.3.27",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "@highlightjs/cdn-assets": "11.12.0",
+    "katex": "0.18.7",
+    "playwright": "1.61.1"
   },
   "overrides": {
     "@earendil-works/pi-agent-core": "$@earendil-works/pi-agent-core",

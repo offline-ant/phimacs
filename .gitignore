@@ -8,3 +8,7 @@ artifacts/
 .staging/
 *.tgz
 *.log
+packages/tau/bin/
+packages/tau/public/*.js
+packages/tau/public/vendor/
+packages/tau/public/tests/

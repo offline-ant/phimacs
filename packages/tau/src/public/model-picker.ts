@@ -1,0 +1,416 @@
+import type { ModelRecord, RpcCommand } from './app-types.js';
+import { isImeComposition } from './keyboard.js';
+import type { CommandTarget, InputContext } from './unsent-input.js';
+import { modelMeta, modelRef, normalizeModelList, searchModels } from './model-match.js';
+
+type ModelPickerOptions = {
+  getActiveLiveSessionId(): string | null;
+  isViewingActiveSession(): boolean;
+  rpcCommand(cmd: RpcCommand, statusMsg?: string): Promise<{ success?: boolean; data?: Record<string, unknown>; error?: string }>;
+  captureCommandTarget(): CommandTarget | null;
+  commandContextIsCurrent(sessionId: string, context: InputContext): boolean;
+  flashStatusError(message: string, ms?: number): void;
+  escapeHtml(text: string): string;
+  setContextWindowSize(value: number): void;
+  updateContextPill(): void;
+  focusComposer(): void;
+};
+
+export function setupModelPicker(options: ModelPickerOptions) {
+  const { getActiveLiveSessionId, isViewingActiveSession, rpcCommand, captureCommandTarget, commandContextIsCurrent, flashStatusError, escapeHtml, setContextWindowSize, updateContextPill, focusComposer } = options;
+
+// ═══════════════════════════════════════
+// Model Picker
+// ═══════════════════════════════════════
+
+// All element lookups below query the app's static index.html shell, which is
+// present before this setup function runs; assert non-null at the query site.
+const modelInput = document.getElementById('model-input')!;
+// Inner label span: the scrollable text container on mobile (buttons are
+// unreliable scroll containers, so the text lives in its own element).
+const modelInputLabel = document.getElementById('model-input-label')!;
+const modelPickerOverlay = document.getElementById('model-picker-overlay')!;
+const modelPicker = document.getElementById('model-picker')!;
+const modelPickerInput = document.getElementById('model-picker-input')!;
+const modelPickerList = document.getElementById('model-picker-list')!;
+const modelPickerMessage = document.getElementById('model-picker-message')!;
+const modelPickerClose = document.getElementById('model-picker-close')!;
+const modelPickerCancel = document.getElementById('model-picker-cancel')!;
+const modelPickerSave = document.getElementById('model-picker-save')!;
+const VALID_THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+const MODEL_PICKER_HELP = 'Type provider or model name; optional :off|minimal|low|medium|high|xhigh|max';
+let currentModelId: ModelRecord | string = '';
+let availableModels: Array<ModelRecord | string> = [];
+let currentThinkingLevel = 'off';
+let modelPickerMatches: ModelRecord[] = [];
+let modelPickerActiveIndex = -1;
+let modelPickerJustSelected = false;
+let pickerTarget: CommandTarget | null = null;
+
+function modelDisplayString() {
+  if (!currentModelId) return '';
+  let provider, modelId;
+  if (typeof currentModelId === 'object' && currentModelId) {
+    provider = currentModelId.provider || '';
+    modelId = currentModelId.id || '';
+  } else {
+    // Legacy fallback: a bare string is ambiguous when model names contain
+    // slashes (e.g. openrouter/z-ai/glm-5.2). Split ONCE on the first slash
+    // to separate provider from the rest, because the server normalizes
+    // everything into {provider, id} objects before it reaches us.
+    const str = String(currentModelId);
+    const slashIdx = str.indexOf('/');
+    if (slashIdx === -1) {
+      provider = '';
+      modelId = str;
+    } else {
+      provider = str.slice(0, slashIdx);
+      modelId = str.slice(slashIdx + 1);
+    }
+  }
+  const level = currentThinkingLevel || 'off';
+  if (provider && modelId) return `${provider}/${modelId}:${level}`;
+  if (modelId) return `${modelId}:${level}`;
+  return '';
+}
+
+function updateModelDisplay() {
+  const display = modelDisplayString() || 'Model';
+  modelInputLabel.textContent = display;
+  modelInput.title = display === 'Model' ? 'Choose model and (optionally) thinking level for this session' : display;
+  modelInput.classList.remove('invalid');
+}
+
+function parseModelSpec(raw: string) {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) {
+    return { error: 'Use format provider/model[:thinking], e.g. opencode-go/deepseek-v4-pro:xhigh' };
+  }
+  // Model IDs can contain slashes (e.g. OpenRouter "z-ai/glm-5.2"), so the
+  // input format is provider/<rest...>[:level]. Split on the FIRST slash to
+  // separate provider, then split off the optional :level suffix from the end.
+  const firstSlash = trimmed.indexOf('/');
+  if (firstSlash === -1) {
+    return { error: 'Use format provider/model[:thinking], e.g. opencode-go/deepseek-v4-pro:xhigh' };
+  }
+  const provider = trimmed.slice(0, firstSlash);
+  const rest = trimmed.slice(firstSlash + 1);
+  if (!provider || !rest) {
+    return { error: 'Use format provider/model[:thinking], e.g. opencode-go/deepseek-v4-pro:xhigh' };
+  }
+  let modelId = rest;
+  let thinking = null;
+  const lastColon = rest.lastIndexOf(':');
+  if (lastColon !== -1) {
+    const candidate = rest.slice(lastColon + 1).toLowerCase();
+    if (VALID_THINKING_LEVELS.has(candidate)) {
+      thinking = candidate;
+      modelId = rest.slice(0, lastColon);
+    }
+  }
+  if (!modelId) {
+    return { error: 'Use format provider/model[:thinking], e.g. opencode-go/deepseek-v4-pro:xhigh' };
+  }
+  return { provider, modelId, thinking };
+}
+
+function validThinkingSuffix(raw: string) {
+  const text = String(raw || '').trim();
+  const colonIdx = text.lastIndexOf(':');
+  if (colonIdx === -1) return '';
+  const candidate = text.slice(colonIdx + 1).toLowerCase();
+  return VALID_THINKING_LEVELS.has(candidate) ? `:${candidate}` : '';
+}
+
+function setModelPickerMessage(message = MODEL_PICKER_HELP, isError = false) {
+  modelPickerMessage.textContent = message;
+  modelPickerMessage.classList.toggle('error', isError);
+  modelPickerInput.classList.toggle('invalid', isError);
+}
+
+function updateModelPickerActiveItem() {
+  modelPickerList.querySelectorAll('.model-item').forEach((item, index) => {
+    const active = index === modelPickerActiveIndex;
+    item.classList.toggle('active', active);
+    item.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+}
+
+function renderModelPickerSuggestions() {
+  const raw = modelPickerInput.value || '';
+  modelPickerSave.disabled = !raw.trim();
+  modelPickerList.innerHTML = '';
+  modelPickerJustSelected = false;
+  if (raw.includes(':')) {
+    modelPickerMatches = [];
+    modelPickerActiveIndex = -1;
+    setModelPickerMessage(MODEL_PICKER_HELP, false);
+    return;
+  }
+
+  const models = normalizeModelList(availableModels);
+  const query = raw.trim();
+  modelPickerMatches = searchModels(models, query);
+  if (modelPickerActiveIndex >= modelPickerMatches.length) modelPickerActiveIndex = modelPickerMatches.length - 1;
+  if (modelPickerActiveIndex < 0 && modelPickerMatches.length) modelPickerActiveIndex = 0;
+
+  if (!modelPickerMatches.length) {
+    const empty = document.createElement('div');
+    empty.className = 'model-item-context';
+    empty.textContent = models.length ? 'No matching models. You can still save a manual provider/model value.' : 'No model list available. You can still save a manual provider/model value.';
+    empty.style.padding = '10px 12px';
+    modelPickerList.appendChild(empty);
+    return;
+  }
+
+  modelPickerMatches.forEach((model, index) => {
+    const item = document.createElement('button');
+    item.type = 'button';
+    item.className = `model-item${index === modelPickerActiveIndex ? ' active' : ''}`;
+    item.setAttribute('role', 'option');
+    item.setAttribute('aria-selected', index === modelPickerActiveIndex ? 'true' : 'false');
+    const meta = modelMeta(model);
+    item.innerHTML = `
+      <span class="model-item-name">${escapeHtml(model.id || '')}<span class="model-item-provider">${escapeHtml(model.provider || '')}</span></span>
+      <span class="model-item-context">${escapeHtml(meta)}</span>
+    `;
+    item.addEventListener('mouseenter', () => {
+      modelPickerActiveIndex = index;
+      updateModelPickerActiveItem();
+    });
+    item.addEventListener('click', () => selectModelSuggestion(index));
+    modelPickerList.appendChild(item);
+  });
+}
+
+function selectModelSuggestion(index: number) {
+  const model = modelPickerMatches[index];
+  if (!model) return;
+  const suffix = validThinkingSuffix(modelPickerInput.value);
+  modelPickerInput.value = `${modelRef(model)}${suffix}`;
+  modelPickerInput.focus();
+  modelPickerInput.setSelectionRange(modelPickerInput.value.length, modelPickerInput.value.length);
+  modelPickerMatches = [];
+  modelPickerActiveIndex = -1;
+  modelPickerList.innerHTML = '';
+  modelPickerSave.disabled = false;
+  modelPickerJustSelected = true;
+}
+
+function openModelPicker() {
+  pickerTarget = captureCommandTarget();
+  if (!pickerTarget) return;
+  // The model button is disabled by updateLiveSessionInputState when there is no
+  // active live session, so this handler is only reachable via click when a
+  // session exists.
+  availableModels = [];
+  modelPickerInput.value = modelDisplayString();
+  modelPickerActiveIndex = -1;
+  modelPickerJustSelected = false;
+  setModelPickerMessage(MODEL_PICKER_HELP, false);
+  renderModelPickerSuggestions();
+  modelPicker.classList.remove('hidden');
+  modelPickerOverlay.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    modelPickerInput.focus();
+    modelPickerInput.select();
+  });
+  const target = pickerTarget;
+  rpcCommand({ type: 'get_available_models', sessionId: target.sessionId }).then(response => {
+    if (pickerTarget !== target || !commandContextIsCurrent(target.sessionId, target.inputContext)) return;
+    if (response?.success && Array.isArray(response.data?.models)) {
+      availableModels = response.data.models;
+      renderModelPickerSuggestions();
+    } else {
+      setModelPickerMessage(response?.error || 'Cannot read the agent’s model list.', true);
+    }
+  });
+}
+
+function closeModelPicker() {
+  pickerTarget = null;
+  modelPicker.classList.add('hidden');
+  modelPickerOverlay.classList.add('hidden');
+  modelPickerMatches = [];
+  modelPickerActiveIndex = -1;
+  modelPickerJustSelected = false;
+  modelPickerList.innerHTML = '';
+  setModelPickerMessage(MODEL_PICKER_HELP, false);
+  focusComposer();
+}
+
+async function applyModelSpec(rawSpec: string, target = captureCommandTarget()) {
+  if (!target || !commandContextIsCurrent(target.sessionId, target.inputContext)) {
+    return { success: false, error: 'The model selection belongs to a conversation that changed or is not ready.' };
+  }
+  const raw = String(rawSpec || '').trim();
+  // No-op when the user didn't actually edit anything. Avoids spurious
+  // set_model/set_thinking_level RPCs and false validation errors on the
+  // current display string.
+  if (raw === modelDisplayString()) {
+    modelInput.classList.remove('invalid');
+    return { success: true };
+  }
+  if (!isViewingActiveSession() || !getActiveLiveSessionId()) {
+    const error = 'Select a live agent first.';
+    flashStatusError(error);
+    return { success: false, error };
+  }
+  const parsed = parseModelSpec(raw);
+  if (parsed.error) {
+    flashStatusError(parsed.error);
+    return { success: false, error: parsed.error };
+  }
+  const r = await rpcCommand({ type: 'set_model', ...target, provider: parsed.provider, modelId: parsed.modelId }, `Switching to ${parsed.provider}/${parsed.modelId}...`);
+  if (!commandContextIsCurrent(target.sessionId, target.inputContext)) {
+    return { success: false, error: 'The conversation changed while setting the model. Nothing else was sent.' };
+  }
+  if (r && r.success) {
+    const data = r.data || {};
+    // Always retain the provider so modelDisplayString() can render the
+    // full `provider/model:thinking` form. The server sometimes omits
+    // `provider` in its response; fall back to the user-typed value.
+    const responseModel = (typeof data.model === 'object' && data.model ? data.model : data) as ModelRecord;
+    const provider = responseModel.provider || parsed.provider;
+    const id = responseModel.id || parsed.modelId;
+    currentModelId = (provider && id) ? { ...responseModel, provider, id } : (id || parsed.modelId || '');
+    if (typeof data.thinkingLevel === 'string') currentThinkingLevel = data.thinkingLevel;
+    const responseContextWindow = responseModel.contextWindow || data.contextWindow;
+    if (responseContextWindow) {
+      setContextWindowSize(Number(responseContextWindow) || 0);
+      updateContextPill();
+    }
+    if (parsed.thinking !== null) {
+      const t = await rpcCommand({ type: 'set_thinking_level', ...target, level: parsed.thinking }, 'Setting thinking...');
+      if (!commandContextIsCurrent(target.sessionId, target.inputContext)) {
+        return { success: false, error: 'The conversation changed while setting thinking.' };
+      }
+      if (t && t.success) {
+        currentThinkingLevel = parsed.thinking ?? 'off';
+      } else {
+        // Non-fatal: the model was already changed on the server.
+        // Show the error but still consider the model update successful
+        // so the popup closes and the user can retry thinking separately.
+        flashStatusError((t && t.error) ? t.error : 'Failed to set thinking level');
+      }
+    }
+    modelInput.classList.remove('invalid');
+    updateModelDisplay();
+    return { success: true };
+  }
+  const error = (r && r.error) ? r.error : 'Unknown model';
+  flashStatusError(error);
+  modelInput.classList.add('invalid');
+  setTimeout(() => modelInput.classList.remove('invalid'), 1200);
+  return { success: false, error };
+}
+
+async function saveModelPicker() {
+  const result = await applyModelSpec(modelPickerInput.value, pickerTarget);
+  if (result.success) {
+    closeModelPicker();
+  } else {
+    setModelPickerMessage(result.error || 'Failed to update model', true);
+    modelPickerInput.focus();
+  }
+}
+
+modelInput.addEventListener('click', openModelPicker);
+modelPickerOverlay.addEventListener('click', closeModelPicker);
+modelPickerClose.addEventListener('click', closeModelPicker);
+modelPickerCancel.addEventListener('click', closeModelPicker);
+modelPickerSave.addEventListener('click', saveModelPicker);
+modelPickerInput.addEventListener('input', () => {
+  modelPickerActiveIndex = -1;
+  modelPickerJustSelected = false;
+  setModelPickerMessage(MODEL_PICKER_HELP, false);
+  renderModelPickerSuggestions();
+});
+modelPickerInput.addEventListener('keydown', (e) => {
+  if (isImeComposition(e)) return;
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    closeModelPicker();
+    return;
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    if (modelPickerMatches.length) {
+      modelPickerActiveIndex = (modelPickerActiveIndex + 1) % modelPickerMatches.length;
+      renderModelPickerSuggestions();
+    }
+    return;
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    if (modelPickerMatches.length) {
+      modelPickerActiveIndex = (modelPickerActiveIndex - 1 + modelPickerMatches.length) % modelPickerMatches.length;
+      renderModelPickerSuggestions();
+    }
+    return;
+  }
+  if (e.key === 'Tab' && modelPickerMatches.length && modelPickerActiveIndex >= 0) {
+    e.preventDefault();
+    selectModelSuggestion(modelPickerActiveIndex);
+    return;
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (!modelPickerJustSelected && modelPickerMatches.length && modelPickerActiveIndex >= 0) {
+      selectModelSuggestion(modelPickerActiveIndex);
+    } else {
+      saveModelPicker();
+    }
+  }
+});
+
+async function fetchModelInfo() {
+  const target = captureCommandTarget();
+  if (!target) return;
+  const sessionId = target.sessionId;
+  try {
+    const stateResp = await fetch('/api/rpc', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'get_state', sessionId }) });
+    const stateData = await stateResp.json();
+    if (!commandContextIsCurrent(sessionId, target.inputContext)) return;
+    if (stateData.success && stateData.data?.model !== undefined) {
+      // Server is canonical: stateData.data.model is null or a full
+      // {provider,id} object. Assign directly — no string fallback.
+      currentModelId = stateData.data.model || '';
+      if (stateData.data.model?.contextWindow) {
+        setContextWindowSize(Number(stateData.data.model.contextWindow) || 0);
+        updateContextPill();
+      }
+    }
+    if (stateData.success && stateData.data?.thinkingLevel) {
+      currentThinkingLevel = stateData.data.thinkingLevel || 'off';
+    }
+    updateModelDisplay();
+  } catch (e) {
+    // ignore
+  }
+}
+
+  function setModelState(model: ModelRecord | string | null, thinkingLevel = 'off') {
+    currentModelId = model || '';
+    currentThinkingLevel = thinkingLevel || 'off';
+    updateModelDisplay();
+  }
+
+  function setThinkingLevel(level: string) {
+    currentThinkingLevel = level || 'off';
+    updateModelDisplay();
+  }
+
+  function setEnabled(enabled: boolean) {
+    modelInput.disabled = !enabled;
+  }
+
+  function closeIfOpen() {
+    if (modelPicker.classList.contains('hidden')) return false;
+    closeModelPicker();
+    return true;
+  }
+
+  return { applyModelSpec, closeIfOpen, fetchModelInfo, setEnabled, setModelState, setThinkingLevel, updateModelDisplay };
+}

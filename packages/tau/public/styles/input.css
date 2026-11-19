@@ -1,0 +1,280 @@
+/* Composer: input field, attachments and buttons. */
+/* ═══════════════════════════════════════════════════════
+   Input Area — floating glass field
+   ═══════════════════════════════════════════════════════ */
+
+.input-area {
+  padding: 10px 20px 12px;
+  background: var(--header-bg);
+  backdrop-filter: blur(40px) saturate(1.5);
+  -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  border-top: 1px solid var(--border);
+  position: relative;
+  z-index: 10;
+  overflow-x: hidden;
+}
+
+/* Image previews */
+.image-previews {
+  display: flex;
+  gap: 8px;
+  padding: 0 0 8px;
+  max-width: 800px;
+  overflow-x: auto;
+}
+
+.image-previews.hidden { display: none; }
+
+.image-preview {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  animation: popIn 0.25s var(--spring);
+  transition: transform 0.15s var(--ease), opacity 0.15s var(--ease);
+}
+
+.image-preview:hover {
+  transform: scale(1.05);
+}
+
+.image-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-preview-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.6);
+  border: none;
+  color: white;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity var(--duration) var(--ease);
+}
+
+.image-preview:hover .image-preview-remove { opacity: 1; }
+
+#chat-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+}
+
+.input-left-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-self: center;
+}
+
+.input-icon-btn {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--duration) var(--ease);
+  flex-shrink: 0;
+}
+
+.input-icon-btn:hover {
+  color: var(--text-secondary);
+  background: var(--bg-glass-hover);
+}
+
+.input-icon-btn:active {
+  opacity: 0.7;
+}
+
+
+
+.input-bubble {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+#message-input {
+  flex: 1;
+  padding: 12px 44px 12px 18px;
+  background: var(--composer-bg, var(--bg-glass));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm), var(--shadow-inset);
+  font-size: 16px;
+  font-family: inherit;
+  outline: none;
+  resize: none;
+  max-height: 160px;
+  line-height: 1.45;
+  overflow-y: auto;
+  backdrop-filter: blur(var(--blur));
+  -webkit-backdrop-filter: blur(var(--blur));
+  transition: all var(--duration) var(--ease);
+}
+
+#message-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-glow), var(--shadow-sm), var(--shadow-inset);
+  background: var(--composer-bg, var(--bg-glass-hover));
+}
+
+.input-mic-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--duration) var(--ease);
+}
+
+.input-mic-btn:hover {
+  color: var(--text-secondary);
+  background: var(--bg-glass-hover);
+}
+
+.input-mic-btn.recording {
+  color: var(--error);
+  animation: pulse 1.5s infinite;
+}
+
+.input-mic-btn.transcribing {
+  color: var(--accent);
+  animation: pulse 0.8s infinite;
+}
+
+.input-mic-btn.unavailable { opacity: 0.4; }
+
+.voice-status {
+  margin: 0 0 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-status.error { color: var(--error); }
+.voice-status.hidden { display: none; }
+
+#message-input:disabled { opacity: 0.35; cursor: not-allowed; }
+#message-input::placeholder { color: var(--text-dim); }
+
+:root[data-theme="telegram"] #message-input,
+:root[data-theme="clean"] #message-input,
+:root[data-theme="terracotta"] #message-input,
+:root[data-theme="sage"] #message-input {
+  border-color: var(--border-hover);
+}
+
+.input-actions { display: flex; gap: 4px; align-self: center; }
+
+#send-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  border: none;
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+  box-shadow: 3px 3px 10px var(--accent-glow), -2px -2px 6px rgba(255, 255, 255, 0.15), inset 0 1px 2px rgba(255, 255, 255, 0.2);
+}
+
+#send-btn:hover:not(:disabled) {
+  transform: scale(1.1);
+  filter: brightness(1.15);
+  box-shadow: 0 6px 24px var(--accent-glow);
+}
+
+#send-btn:active:not(:disabled) {
+  transform: scale(0.88);
+  transition: transform 0.1s var(--ease);
+}
+
+.send-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--on-accent, white);
+}
+
+#abort-btn {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  background: var(--error);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  border: none;
+  cursor: pointer;
+  color: var(--on-error, white);
+  transition: all var(--duration) var(--ease);
+  box-shadow: 0 4px 16px rgba(248, 113, 113, 0.3);
+}
+
+#abort-btn:hover:not(:disabled) { transform: scale(1.1); }
+#abort-btn:active:not(:disabled) { transform: scale(0.88); transition: transform 0.1s var(--ease); }
+
+/* Primary button — use .btn-primary or dialog action buttons */
+.btn-primary,
+.dialog-actions button {
+  padding: 8px 18px;
+  background: var(--accent);
+  color: var(--on-accent, white);
+  border: none;
+  border-radius: var(--radius-md);
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.btn-primary:hover:not(:disabled),
+.dialog-actions button:hover:not(:disabled) { filter: brightness(1.1); }
+.btn-primary:disabled,
+.dialog-actions button:disabled { opacity: 0.35; cursor: not-allowed; }
+
+.hidden { display: none !important; }
+

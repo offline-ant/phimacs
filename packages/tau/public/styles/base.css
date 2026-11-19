@@ -1,0 +1,591 @@
+/* Theme variables, global elements, page layout and the session sidebar. Load first; the other style sheets follow in index.html order. */
+/* ═══════════════════════════════════════════════════════
+   TAU — Dark Glassmorphism
+   ═══════════════════════════════════════════════════════ */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+/* Global focus-visible — accessible keyboard focus ring */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none; /* handled by their own focus styles */
+}
+
+:root {
+  /* Shape */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius: 16px;
+  --radius-lg: 24px;
+  --radius-pill: 100px;
+
+  /* Sizing */
+  --sidebar-width: 272px;
+
+  /* Motion */
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration: 0.2s;
+
+  /* Glass */
+  --blur: 24px;
+  --blur-heavy: 48px;
+
+  /* Semantic */
+  --success: #34d399;
+  --error: #f87171;
+  --warning: #fbbf24;
+}
+
+/* Dracula editor chrome, with Pilish's Pi chat surfaces. */
+:root:not([data-theme]),
+:root[data-theme="dracula"] {
+  color-scheme: dark;
+
+  --bg-solid: #282a36;
+  --header-bg: #44475a;
+  --browser-chrome: #44475a;
+  --sidebar-bg-mobile: #282a36;
+  --bg-glass: #303240;
+  --bg-glass-hover: #353747;
+  --bg-glass-active: #44475a;
+  --bg-glass-strong: #353747;
+  --bg-frosted: #303240;
+
+  --text-primary: #f8f8f2;
+  --text-secondary: #c9c9c5;
+  --text-dim: #b6b6b2;
+  --text-ghost: rgb(248 248 242 / 10%);
+  --header-pill-text: var(--text-primary);
+
+  --accent: #bd93f9;
+  --accent-text: #8be9fd;
+  --accent-glow: rgb(189 147 249 / 22%);
+  --accent-subtle: rgb(189 147 249 / 20%);
+  --on-accent: #282a36;
+
+  --user-bubble: #213b49;
+  --composer-bg: var(--user-bubble);
+  --assistant-bubble: var(--bg-solid);
+  --user-bubble-text: var(--text-primary);
+
+  --tool-accent: #bd93f9;
+  --tool-accent-text: var(--text-primary);
+  --tool-bg: #34383a;
+  --tool-success-bg: #254131;
+  --tool-error-bg: #5b282a;
+  --tool-output-text: #9da5a9;
+
+  --thinking-accent: #6272a4;
+  --thinking-accent-text: #96a0a4;
+  --thinking-content-text: var(--thinking-accent-text);
+  --thinking-bg: transparent;
+  --summary-bg: #3a3055;
+
+  --border: #44475a;
+  --border-hover: #6272a4;
+  --border-bright: #868bac;
+  --shadow-sm: none;
+  --shadow-md: 0 2px 10px rgb(0 0 0 / 25%);
+  --shadow-lg: 0 4px 18px rgb(0 0 0 / 35%);
+  --shadow-inset: none;
+
+  --success: #50fa7b;
+  --error: #ff5555;
+  --on-error: #282a36;
+  --warning: #ffb86c;
+}
+:root[data-theme="dracula"] ::selection { background: #44475a; color: var(--text-primary); }
+
+/* ─── Telegram — blue and white light ─── */
+:root[data-theme="telegram"] {
+  color-scheme: light;
+
+  --bg-solid: #ffffff;
+  --browser-chrome: #3390ec;
+  --header-bg: rgba(255, 255, 255, 0.92);
+  --sidebar-bg-mobile: rgba(255, 255, 255, 0.97);
+  --bg-glass: rgba(0, 0, 0, 0.03);
+  --bg-glass-hover: rgba(51, 144, 236, 0.08);
+  --bg-glass-active: rgba(51, 144, 236, 0.14);
+  --bg-glass-strong: rgba(0, 0, 0, 0.04);
+  --bg-frosted: rgba(255, 255, 255, 0.96);
+
+  --text-primary: rgba(0, 0, 0, 0.87);
+  --text-secondary: #5f6a73;
+  --text-dim: #8d979f;
+  --text-ghost: rgba(0, 0, 0, 0.1);
+
+  --accent: #3390ec;
+  --accent-glow: rgba(51, 144, 236, 0.18);
+  --accent-subtle: rgba(51, 144, 236, 0.08);
+  --accent-text: #2481cc;
+  --header-pill-text: rgba(0, 0, 0, 0.55);
+
+  --user-bubble: #d7ebfd;
+  --assistant-bubble: #ffffff;
+  --user-bubble-text: rgba(0, 0, 0, 0.87);
+
+  --tool-accent: #3390ec;
+  --tool-accent-text: #2481cc;
+  --tool-bg: rgba(255, 255, 255, 0.92);
+
+  --thinking-accent: #5ea9ea;
+  --thinking-accent-text: #2b7bc4;
+  --thinking-bg: rgba(51, 144, 236, 0.06);
+
+  --border: rgba(0, 0, 0, 0.08);
+  --border-hover: rgba(0, 0, 0, 0.14);
+  --border-bright: rgba(0, 0, 0, 0.2);
+
+  --shadow-sm: 0 1px 2px rgba(16, 35, 47, 0.1);
+  --shadow-md: 0 2px 8px rgba(16, 35, 47, 0.1);
+  --shadow-lg: 0 4px 16px rgba(16, 35, 47, 0.12);
+  --shadow-inset: none;
+
+  --success: #31b545;
+  --error: #e53935;
+  --warning: #e09b00;
+
+  /* Light blue chat wallpaper with faint doodles. */
+  --chat-wallpaper: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' fill='none' stroke='%233390ec' stroke-opacity='.1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='24' cy='26' r='8'/%3E%3Cpath d='M108 14l4 8 9 1-7 6 2 9-8-5-8 5 2-9-7-6 9-1z'/%3E%3Cpath d='M12 98q10-10 20 0t20 0'/%3E%3Crect x='94' y='86' width='30' height='20' rx='7'/%3E%3Cpath d='M101 106l-4 8 10-8'/%3E%3Cpath d='M68 58v14M61 65h14'/%3E%3Cpath d='M144 148a9 9 0 1 1-9-9'/%3E%3Cpath d='M42 146l8-8 8 8'/%3E%3Cpath d='M146 56l6 6m0-6l-6 6'/%3E%3C/svg%3E") #dfe9f3;
+}
+
+/* Telegram's toolbar is solid blue with white controls; its popover is not. */
+:root[data-theme="telegram"] .header {
+  background: #3390ec;
+  border-bottom-color: transparent;
+  --text-primary: #ffffff;
+  --text-secondary: rgba(255, 255, 255, 0.9);
+  --text-dim: rgba(255, 255, 255, 0.75);
+  --header-pill-text: rgba(255, 255, 255, 0.9);
+  --bg-glass: rgba(255, 255, 255, 0.14);
+  --bg-glass-hover: rgba(255, 255, 255, 0.22);
+  --border: rgba(255, 255, 255, 0.22);
+  --border-hover: rgba(255, 255, 255, 0.4);
+  --accent: #ffffff;
+  --accent-glow: rgba(255, 255, 255, 0.35);
+}
+
+:root[data-theme="telegram"] .header .stats-card,
+:root[data-theme="telegram"] .header .header-menu {
+  --text-primary: rgba(0, 0, 0, 0.87);
+  --text-secondary: #5f6a73;
+  --text-dim: #8d979f;
+  --border: rgba(0, 0, 0, 0.08);
+  --border-hover: rgba(0, 0, 0, 0.14);
+  --accent: #3390ec;
+  color: var(--text-primary);
+}
+
+/* ─── Dusk — clean neutral dark ─── */
+:root[data-theme="night"] {
+  color-scheme: dark;
+
+  --bg-solid: #212121;
+  --header-bg: rgba(33, 33, 33, 0.7);
+  --sidebar-bg-mobile: rgba(40, 40, 38, 0.95);
+  --bg-glass: rgba(255, 255, 255, 0.04);
+  --bg-glass-hover: rgba(255, 255, 255, 0.06);
+  --bg-glass-active: rgba(255, 255, 255, 0.08);
+  --bg-glass-strong: rgba(255, 255, 255, 0.05);
+  --bg-frosted: rgba(33, 33, 33, 0.85);
+
+  --text-primary: rgba(255, 255, 255, 0.88);
+  --text-secondary: rgba(255, 255, 255, 0.50);
+  --text-dim: rgba(255, 255, 255, 0.30);
+  --text-ghost: rgba(255, 255, 255, 0.10);
+
+  --accent: #a0a0a0;
+  --accent-glow: rgba(255, 255, 255, 0.06);
+  --accent-subtle: rgba(255, 255, 255, 0.04);
+  --accent-text: #c0c0c0;
+
+  --user-bubble: rgba(255, 255, 255, 0.12);
+  --assistant-bubble: rgba(255, 255, 255, 0.05);
+  --user-bubble-text: var(--text-primary);
+
+  --tool-accent: #777;
+  --tool-accent-text: #999;
+  --tool-bg: rgba(255, 255, 255, 0.03);
+
+  --thinking-accent: #666;
+  --thinking-accent-text: #888;
+  --thinking-bg: rgba(255, 255, 255, 0.02);
+
+  --border: rgba(255, 255, 255, 0.06);
+  --border-hover: rgba(255, 255, 255, 0.10);
+  --border-bright: rgba(255, 255, 255, 0.14);
+
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-inset: none;
+
+}
+
+/* ─── Midnight — OLED black ─── */
+:root[data-theme="midnight"] {
+  color-scheme: dark;
+
+  --bg-solid: #000000;
+  --header-bg: rgba(0, 0, 0, 0.65);
+  --sidebar-bg-mobile: rgba(18, 18, 17, 0.95);
+  --bg-glass: rgba(255, 255, 255, 0.03);
+  --bg-glass-hover: rgba(255, 255, 255, 0.05);
+  --bg-glass-active: rgba(255, 255, 255, 0.07);
+  --bg-glass-strong: rgba(255, 255, 255, 0.04);
+  --bg-frosted: rgba(0, 0, 0, 0.90);
+
+  --text-primary: rgba(255, 255, 255, 0.85);
+  --text-secondary: rgba(255, 255, 255, 0.45);
+  --text-dim: rgba(255, 255, 255, 0.32);
+  --text-ghost: rgba(255, 255, 255, 0.08);
+
+  --accent: #6a7a88;
+  --accent-glow: rgba(106, 122, 136, 0.10);
+  --accent-subtle: rgba(106, 122, 136, 0.06);
+  --accent-text: #8a9aa8;
+
+  --user-bubble: rgba(255, 255, 255, 0.14);
+  --assistant-bubble: rgba(255, 255, 255, 0.06);
+  --user-bubble-text: var(--text-primary);
+
+  --tool-accent: #4a5565;
+  --tool-accent-text: #8a95a5;
+  --tool-bg: rgba(255, 255, 255, 0.06);
+
+  --thinking-accent: #4a5a72;
+  --thinking-accent-text: #8a9ab8;
+  --thinking-bg: rgba(60, 75, 110, 0.12);
+
+  --border: rgba(255, 255, 255, 0.04);
+  --border-hover: rgba(255, 255, 255, 0.08);
+  --border-bright: rgba(255, 255, 255, 0.12);
+
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-inset: none;
+
+}
+
+/* ─── Dawn — warm blue dark ─── */
+:root[data-theme="dawn"] {
+  color-scheme: dark;
+
+  --bg-solid: #1a1d26;
+  --header-bg: rgba(26, 29, 38, 0.65);
+  --sidebar-bg-mobile: rgba(30, 34, 44, 0.95);
+  --bg-glass: rgba(255, 255, 255, 0.04);
+  --bg-glass-hover: rgba(255, 255, 255, 0.07);
+  --bg-glass-active: rgba(255, 255, 255, 0.09);
+  --bg-glass-strong: rgba(255, 255, 255, 0.06);
+  --bg-frosted: rgba(26, 29, 38, 0.78);
+
+  --text-primary: rgba(255, 255, 255, 0.90);
+  --text-secondary: rgba(255, 255, 255, 0.55);
+  --text-dim: rgba(255, 255, 255, 0.35);
+  --text-ghost: rgba(255, 255, 255, 0.12);
+
+  --accent: #7a8ab0;
+  --accent-glow: rgba(122, 138, 176, 0.2);
+  --accent-subtle: rgba(122, 138, 176, 0.1);
+  --accent-text: #a0b4d8;
+
+  --user-bubble: rgba(122, 138, 176, 0.24);
+  --assistant-bubble: rgba(255, 255, 255, 0.06);
+  --user-bubble-text: var(--text-primary);
+
+  --tool-accent: #6a5a80;
+  --tool-accent-text: #a090b8;
+  --tool-bg: rgba(106, 90, 128, 0.07);
+
+  --thinking-accent: #5a7a9a;
+  --thinking-accent-text: #8ab4d8;
+  --thinking-bg: rgba(90, 122, 154, 0.07);
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.13);
+  --border-bright: rgba(255, 255, 255, 0.19);
+
+  --shadow-sm: none;
+  --shadow-md: none;
+  --shadow-lg: none;
+  --shadow-inset: none;
+
+  --success: #34d399;
+
+}
+
+/* ─── Clean — Apple-style light ─── */
+:root[data-theme="clean"] {
+  color-scheme: light;
+
+  --bg-solid: #ffffff;
+  --header-bg: rgba(255, 255, 255, 0.65);
+  --sidebar-bg-mobile: rgba(242, 242, 247, 0.95);
+  --bg-glass: rgba(0, 0, 0, 0.03);
+  --bg-glass-hover: rgba(0, 0, 0, 0.06);
+  --bg-glass-active: rgba(0, 0, 0, 0.09);
+  --bg-glass-strong: rgba(0, 0, 0, 0.04);
+  --bg-frosted: rgba(255, 255, 255, 0.82);
+
+  --text-primary: rgba(0, 0, 0, 0.88);
+  --text-secondary: rgba(0, 0, 0, 0.55);
+  --text-dim: rgba(0, 0, 0, 0.35);
+  --text-ghost: rgba(0, 0, 0, 0.12);
+
+  --accent: #0580c4;
+  --accent-glow: rgba(5, 128, 196, 0.15);
+  --accent-subtle: rgba(5, 128, 196, 0.06);
+  --accent-text: #0470b0;
+  --header-pill-text: rgba(0, 0, 0, 0.55);
+
+  --user-bubble: #2a96d6;
+  --assistant-bubble: #eff1f4;
+  --user-bubble-text: white;
+
+  --tool-accent: #007aff;
+  --tool-accent-text: #007aff;
+  --tool-bg: rgba(0, 122, 255, 0.05);
+
+  --thinking-accent: #5ac8fa;
+  --thinking-accent-text: #2a8abf;
+  --thinking-bg: rgba(90, 200, 250, 0.06);
+
+  --border: rgba(0, 0, 0, 0.08);
+  --border-hover: rgba(0, 0, 0, 0.14);
+  --border-bright: rgba(0, 0, 0, 0.2);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-inset: none;
+
+  --success: #34c759;
+
+}
+
+/* ─── Terracotta — warm light ─── */
+:root[data-theme="terracotta"] {
+  color-scheme: light;
+
+  --bg-solid: #f4f1ec;
+  --header-bg: rgba(244, 241, 236, 0.65);
+  --sidebar-bg-mobile: rgba(240, 234, 224, 0.95);
+  --bg-glass: rgba(244, 241, 236, 0.6);
+  --bg-glass-hover: rgba(0, 0, 0, 0.06);
+  --bg-glass-active: rgba(0, 0, 0, 0.10);
+  --bg-glass-strong: rgba(244, 241, 236, 0.7);
+  --bg-frosted: rgba(244, 241, 236, 0.8);
+
+  --text-primary: rgba(0, 0, 0, 0.92);
+  --text-secondary: rgba(0, 0, 0, 0.62);
+  --text-dim: rgba(0, 0, 0, 0.38);
+  --text-ghost: rgba(0, 0, 0, 0.14);
+
+  --accent: #b06a48;
+  --accent-glow: rgba(176, 106, 72, 0.15);
+  --accent-subtle: rgba(176, 106, 72, 0.08);
+  --accent-text: #a05e3e;
+  --header-pill-text: rgba(0, 0, 0, 0.65);
+
+  --user-bubble: #b06a48;
+  --assistant-bubble: #ffffff;
+  --user-bubble-text: white;
+
+  --tool-accent: #5c2860;
+  --tool-accent-text: #6b3570;
+  --tool-bg: rgba(92, 40, 96, 0.06);
+
+  --thinking-accent: #3a6a9b;
+  --thinking-accent-text: #4a80b0;
+  --thinking-bg: rgba(58, 106, 155, 0.06);
+
+  --border: rgba(0, 0, 0, 0.06);
+  --border-hover: rgba(0, 0, 0, 0.1);
+  --border-bright: rgba(0, 0, 0, 0.15);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-inset: none;
+
+  --success: #1a8a5a;
+
+}
+
+/* ─── Sage — cool green light ─── */
+:root[data-theme="sage"] {
+  color-scheme: light;
+
+  --bg-solid: #f0f2ec;
+  --header-bg: rgba(240, 242, 236, 0.65);
+  --sidebar-bg-mobile: rgba(232, 238, 226, 0.95);
+  --bg-glass: rgba(240, 242, 236, 0.6);
+  --bg-glass-hover: rgba(0, 0, 0, 0.06);
+  --bg-glass-active: rgba(0, 0, 0, 0.10);
+  --bg-glass-strong: rgba(240, 242, 236, 0.7);
+  --bg-frosted: rgba(240, 242, 236, 0.8);
+
+  --text-primary: rgba(0, 0, 0, 0.90);
+  --text-secondary: rgba(0, 0, 0, 0.58);
+  --text-dim: rgba(0, 0, 0, 0.35);
+  --text-ghost: rgba(0, 0, 0, 0.12);
+
+  --accent: #6a7d5a;
+  --accent-glow: rgba(106, 125, 90, 0.15);
+  --accent-subtle: rgba(106, 125, 90, 0.08);
+  --accent-text: #5a6d4a;
+  --header-pill-text: rgba(0, 0, 0, 0.65);
+
+  --user-bubble: #6a7d5a;
+  --assistant-bubble: #ffffff;
+  --user-bubble-text: white;
+
+  --tool-accent: #4a3860;
+  --tool-accent-text: #5c4870;
+  --tool-bg: rgba(74, 56, 96, 0.06);
+
+  --thinking-accent: #3a6a7a;
+  --thinking-accent-text: #4a808a;
+  --thinking-bg: rgba(58, 106, 122, 0.06);
+
+  --border: rgba(0, 0, 0, 0.06);
+  --border-hover: rgba(0, 0, 0, 0.1);
+  --border-bright: rgba(0, 0, 0, 0.15);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.08);
+  --shadow-inset: none;
+
+  --success: #2a8a52;
+
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', sans-serif;
+  background: var(--bg-solid);
+  color: var(--text-primary);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 15px;
+}
+
+/* ═══════════════════════════════════════════════════════
+   Layout — the glass sits on top of the gradient field
+   ═══════════════════════════════════════════════════════ */
+
+/* --visible-height/--visible-top follow the visual viewport (app-main.ts), so
+   the layout shrinks above an on-screen keyboard even when the browser keeps
+   the layout viewport full height. */
+.app-layout {
+  display: flex;
+  height: var(--visible-height, 100dvh);
+  position: relative;
+  top: var(--visible-top, 0px);
+}
+
+
+/* ═══════════════════════════════════════════════════════
+   Sidebar — smoked glass panel
+   ═══════════════════════════════════════════════════════ */
+
+.sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  background: var(--sidebar-bg-mobile);
+  backdrop-filter: blur(var(--blur-heavy)) saturate(1.5);
+  -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.5);
+  border-right: none;
+
+  display: flex;
+  flex-direction: column;
+  transition: margin-left 0.3s var(--ease);
+  z-index: 100;
+  position: relative;
+}
+
+.sidebar.collapsed {
+  margin-left: calc(var(--sidebar-width) * -1);
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px;
+  -webkit-app-region: drag;
+}
+
+.tau-icon-welcome {
+  width: 64px;
+  height: 64px;
+  border-radius: var(--radius);
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all var(--duration) var(--ease);
+}
+
+.icon-btn:hover {
+  background: var(--bg-glass-hover);
+  color: var(--text-secondary);
+}
+
+.icon-btn:active {
+  opacity: 0.7;
+}
+
+/* No agent shown: nothing to type into */
+.input-area.no-active-live-session {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Mobile overlay */
+.sidebar-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 99;
+  backdrop-filter: blur(8px);
+}
+
+.sidebar-overlay.visible { display: block; }
+

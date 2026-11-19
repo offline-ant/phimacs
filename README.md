@@ -36,6 +36,8 @@ has made me rusty with keyboard shortcuts.
     project instructions.
 - **Terminals.** Agents can run servers and long commands in terminals that you
   can see and use too.
+- **[Tau (experimental)](docs/install.md#tau-experimental).** I don't use it
+  much, but it lets me check in on the same agents from my phone's browser.
 - **Dictation (optional).** Speak into the chat input or any Emacs buffer: click
   the 🎤 button or press a key. It needs a speech-to-text server.
 

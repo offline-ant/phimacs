@@ -85,9 +85,10 @@ settings stay. The packages moved:
 | `pi-ant` | `packages/extensions` |
 | `pi-browser` | `packages/browser` |
 
-Tau, its web frontend, is gone, and with it `/switch tau` and `/rec-setting` (the
-[sound](../packages/sound/README.md) package's `/dictate-setting` replaces it).
-`/take` is gone too. From a Pi in Herdr or tmux, `/switch` refuses to hand over
+[Tau](#tau-experimental) is available as an optional browser frontend for pimux;
+`/switch tau` is not supported. Use the [sound](../packages/sound/README.md)
+package's `/dictate-setting` instead of `/rec-setting`. `/take` is not supported.
+From a Pi in Herdr or tmux, `/switch` refuses to hand over
 the session; it only attaches another frontend to a detached Emacs agent. Tools
 added since, such as `microdo`, `py` (which needs `uv`) and `prompt_history`, stay
 off under a saved `/tools` selection until you enable them there.
@@ -350,6 +351,35 @@ that an already disconnected frontend sent still blocks it until Pi answers.
 `--force` stops busy agents and workers too. Idle root agents stay journaled and
 come back idle with the next `phimacs`.
 [Runtime lifecycle](lifecycle.md#starting-and-stopping-the-service) owns these rules.
+
+## Tau (experimental)
+
+Tau opens the same pimux agents as Emacs in a browser. It is included in the
+Phimacs checkout and uses its npm lockfile; there is no separate clone or
+install step. The [normal checkout build](#requirements-and-source) builds Tau.
+Neither `phimacs setup` nor normal Phimacs startup enables it.
+
+Start pimux first, either with your normal Phimacs startup or with
+`phimacs service pimux` in a separate terminal. Then run on the same host with
+the same Phimacs and Pi environment:
+
+```sh
+phimacs --local service tau
+```
+
+Open [http://127.0.0.1:3001](http://127.0.0.1:3001) on the host. With default
+settings this local listener needs no password. Tau also serves HTTPS on
+loopback. Stop the foreground process with Ctrl+C. Stopping Tau closes browser
+connections, not agents. Use **Close agent** in Tau only to stop the agent itself.
+
+For a phone, configure authenticated HTTPS on a trusted network or VPN. Open
+the HTTPS address without credentials in the URL and sign in on the Tau login
+page. See [Tau's network settings](../packages/tau/README.md#network-access)
+for the bind address, credentials and local certificate authority. Keep
+credentials and bind policy in private service configuration. If you use
+runit, give Tau a separate `run` script that execs `phimacs --local service tau`;
+do not pass Tau credentials to pimux or Emacs. `phimacs stop` does not manage Tau.
+Open Tau directly in a browser and select an agent; `/switch tau` is not supported.
 
 ## Other devices
 

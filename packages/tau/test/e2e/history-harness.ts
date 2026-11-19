@@ -1,0 +1,273 @@
+import { runtimeEnvironment, launcher, installFakeRuntime, closeFakeRuntime, launchBrowser, listenFakeServer, liveManager } from './fake-browser-runtime.ts';
+import { before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import type { TestContext } from 'node:test';
+import type { Browser, Page } from 'playwright';
+import type { JsonAgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import { until } from '../fake-pimux.ts';
+
+// Shared setup for the real-browser tests of session history and tool cards.
+// They drive the actual UI and server through protocol-2 Unix sockets.
+// The injected launch transaction creates only isolated fake runtimes.
+//
+// Each test file runs in its own process, so every file that imports this
+// module gets its own server, session directories, and browser. Call
+// `setupHistoryE2E()` once at the top level of the test file.
+
+export type ToolResultMessage = Extract<Extract<JsonAgentSessionEvent, { type: 'message_end' }>['message'], { role: 'toolResult' }>;
+
+export { liveManager };
+const SESSIONS_DIR = runtimeEnvironment.sessions;
+
+let base = '';
+let browser: Browser | null = null;
+let browserUnavailable = '';
+
+const PROJ_DIR = path.join(SESSIONS_DIR, '--tmp--e2eproj');
+
+// ── Fixtures ──────────────────────────────────────────────────────────────
+// Session A: a large conversation. Every round is user + assistant; every
+// 5th round the assistant also issues a tool call whose result arrives as a
+// separate toolResult entry (so pairing must survive chunked rendering).
+export const ROUNDS = 700;
+export const TOOL_EVERY = 5;
+const LAST_USAGE = { input: 12000, cacheRead: 30000, cost: { total: 0.001 } };
+// Top-level visual rows: one user plus one grouped assistant block per round.
+// Tool items stay inside their owning block, not alongside it.
+export const TOTAL_ITEMS = ROUNDS * 2;
+export const LAST_MARKER = `msg-asst-${String(ROUNDS - 1).padStart(4, '0')}`;
+
+function buildLargeSession(cwd: string) {
+  const pad = (i: number) => String(i).padStart(4, '0');
+  const entries: Array<Record<string, unknown>> = [
+    { type: 'session', id: 'e2e-large', timestamp: '2026-01-01T00:00:00.000Z', cwd },
+  ];
+  for (let i = 0; i < ROUNDS; i++) {
+    entries.push({ type: 'message', message: { role: 'user', content: `msg-user-${pad(i)} question with *markdown* and $x_${i}$` } });
+    const blocks: Array<Record<string, unknown>> = [{ type: 'text', text: `msg-asst-${pad(i)} **answer**` }];
+    if (i % TOOL_EVERY === 0) {
+      blocks.push({ type: 'toolCall', id: `tool-${pad(i)}`, name: 'bash', arguments: { command: `echo round ${i}` } });
+    }
+    const usage = i === ROUNDS - 1 ? LAST_USAGE : { input: 100 + i, cost: { total: 0.001 } };
+    entries.push({ type: 'message', message: { role: 'assistant', content: blocks, usage } });
+    if (i % TOOL_EVERY === 0) {
+      entries.push({
+        type: 'message',
+        message: {
+          role: 'toolResult', toolCallId: `tool-${pad(i)}`, toolName: 'bash',
+          content: [{ type: 'text', text: `tool-result-${pad(i)}` }], isError: false, timestamp: i,
+          nestedCalls: { complete: true, calls: [
+            { id: `tool-${pad(i)}/1`, name: 'read', arguments: { path: `/tmp/round-${i}.txt` }, status: 'ok', durationMs: 12 },
+            { id: `tool-${pad(i)}/1/1`, name: 'bash', arguments: { command: `echo nested ${i}` }, status: 'ok', durationMs: 4 },
+          ] },
+        } satisfies ToolResultMessage,
+      });
+    }
+  }
+  entries.push({ type: 'session_info', name: 'Large E2E Session' });
+  return entries;
+}
+
+// Session B: small, with distinct markers (must not share a substring with
+// session A's markers — the switch test asserts A's text is fully gone).
+export const B_ROUNDS = 3;
+function buildSmallSession(cwd: string) {
+  const entries: Array<Record<string, unknown>> = [
+    { type: 'session', id: 'e2e-small', timestamp: '2026-01-02T00:00:00.000Z', cwd },
+  ];
+  for (let i = 0; i < B_ROUNDS; i++) {
+    entries.push({ type: 'message', message: { role: 'user', content: `other-user-${i}` } });
+    entries.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: `other-asst-${i}` }] } });
+  }
+  entries.push({ type: 'session_info', name: 'Small E2E Session' });
+  return entries;
+}
+
+function writeSession(fileName: string, lines: Array<Record<string, unknown>>) {
+  fs.mkdirSync(PROJ_DIR, { recursive: true });
+  const filePath = path.join(PROJ_DIR, fileName);
+  const entries = lines.map((entry, index) => index === 0 ? entry
+    : { ...entry, id: `entry-${index}`, parentId: index === 1 ? null : `entry-${index - 1}` });
+  fs.writeFileSync(filePath, entries.map((entry) => JSON.stringify(entry)).join('\n') + '\n');
+  return filePath;
+}
+
+export let largeFile = '';
+export let smallFile = '';
+
+// ── Setup / teardown ──────────────────────────────────────────────────────
+
+export function setupHistoryE2E() {
+  before(async () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tau-e2e-cwd-'));
+    largeFile = writeSession('large.jsonl', buildLargeSession(cwd));
+    smallFile = writeSession('small.jsonl', buildSmallSession(cwd));
+
+    installFakeRuntime();
+    // Fixtures edit a view's entries as the writer's tree (below), so views must
+    // outlive the pages that showed them; release has its own server tests.
+    liveManager.releaseDelayMs = 10 * 60_000;
+    // Consumers append synthetic saved entries to their session fixture. Publish
+    // those entries as the mock writer's tree at the next socket boundary.
+    launcher.configure = mux => {
+      const snapshot = mux.snapshot.bind(mux);
+      mux.snapshot = (socket, reason, generation) => {
+        const file = (mux.entry.session as Record<string, unknown>).file;
+        const session = typeof file === 'string' ? liveManager.findBySessionFile(file) : undefined;
+        if (session) {
+          let parentId: string | null = null;
+          mux.entries = session.entries.map((entry: Record<string, unknown>, index: number) => {
+            const id = typeof entry.id === 'string' ? entry.id : `fixture-${index}`;
+            const record = { ...entry, id, parentId };
+            parentId = id;
+            return record;
+          });
+          mux.leafId = parentId;
+          mux.idle = !session.isStreaming;
+        }
+        snapshot(socket, reason, generation);
+      };
+    };
+
+    base = await listenFakeServer();
+
+    try {
+      browser = await launchBrowser();
+    } catch (e) {
+      browserUnavailable = `Playwright browser unavailable (${(e as Error).message.split('\n')[0]}). Run via: npm run test:e2e`;
+    }
+  });
+
+  after(async () => {
+    if (browser) await browser.close().catch(() => {});
+    await closeFakeRuntime();
+  });
+}
+
+export function skipUnlessBrowser(t: TestContext) {
+  if (!browser) {
+    t.skip(browserUnavailable);
+    return true;
+  }
+  return false;
+}
+
+// ── Page helpers ──────────────────────────────────────────────────────────
+
+// Each test gets a fresh incognito context, closed when the test ends. A
+// fresh context clears localStorage, so the app never auto-restores the
+// previous test's active session. Closing it disconnects the page, so it
+// does not keep rendering broadcasts meant for later tests.
+//
+// `throttleCpu` slows the page 4x. Tests that must observe the history while
+// it is still filling need it, because it makes the progressive fill span
+// many frames even on fast machines.
+export type OpenPageOptions = { forceManualScrollAnchoring?: boolean; blockServiceWorkers?: boolean; throttleCpu?: boolean };
+
+export async function openPage(t: TestContext, options: OpenPageOptions = {}) {
+  const context = await browser!.newContext({ serviceWorkers: options.blockServiceWorkers ? 'block' : 'allow' });
+  t.after(() => context.close());
+  if (options.forceManualScrollAnchoring) {
+    await context.addInitScript(() => {
+      const nativeSupports = CSS.supports.bind(CSS);
+      Object.defineProperty(CSS, 'supports', {
+        configurable: true,
+        value: (property: string, value?: string) =>
+          property === 'overflow-anchor'
+            ? false
+            : (value === undefined ? nativeSupports(property) : nativeSupports(property, value)),
+      });
+    });
+  }
+  const page = await context.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', (err: Error) => errors.push(`pageerror: ${err.message}`));
+  page.on('console', (msg: { type: () => string; text: () => string }) => {
+    // Network 404s (favicons etc.) surface as console errors too; only
+    // uncaught exceptions and explicit console.error calls matter here.
+    if (msg.type() === 'error' && !/Failed to load resource/.test(msg.text())) {
+      errors.push(`console.error: ${msg.text()}`);
+    }
+  });
+  if (options.throttleCpu) {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
+  }
+  await page.goto(base);
+  if (options.forceManualScrollAnchoring) {
+    // Chromium normally applies native anchoring even when app code takes the
+    // manual branch. Disable it so this page behaves like stable Safari.
+    await page.addStyleTag({ content: '.messages { overflow-anchor: none !important; }' });
+  }
+  // History starts closed; its projects load when opened, their sessions on expansion.
+  await page.locator('.history-toggle').click();
+  await page.locator('.history-project').first().click();
+  await page.locator('.history-project[aria-expanded="true"]').waitFor();
+  return { page, errors };
+}
+
+/** A saved session's History row; opening it resumes the session as an agent. */
+export function sessionItemSelector(filePath: string) {
+  return `.history-session[data-file-path="${path.resolve(filePath)}"]`;
+}
+
+/**
+ * Shows FILE's conversation: its agent's row once an earlier open resumed it
+ * (History lists only sessions no agent runs), else its History row. Returns
+ * once that agent is the shown one, so the previous conversation is gone.
+ */
+export async function openSession(page: Page, filePath: string) {
+  const file = path.resolve(filePath);
+  const runner = () => launcher.muxes.find(runtime => (runtime.entry.session as Record<string, unknown>).file === file);
+  const running = runner();
+  await page.click(running ? `.agent-row[data-mux-id="${running.muxId}"]` : sessionItemSelector(file));
+  const mux = await until(runner, `No runtime resumed ${file}`, 15000);
+  await page.locator(`.agent-row.active[data-mux-id="${mux.muxId}"]`).waitFor();
+}
+
+export async function assertNoPageErrors(errors: string[]) {
+  assert.deepEqual(errors, []);
+}
+
+let nestedFixtureNumber = 0;
+
+// Opens a fresh small session and returns helpers that broadcast live tool
+// events for one root tool call whose id contains slashes.
+export async function openNestedPage(t: TestContext, options: OpenPageOptions = {}) {
+  const number = ++nestedFixtureNumber;
+  const entries = buildSmallSession(fs.mkdtempSync(path.join(os.tmpdir(), 'tau-e2e-nested-cwd-')));
+  entries[0].id = `nested-${number}`;
+  const file = writeSession(`nested-${number}.jsonl`, entries);
+  const { page, errors } = await openPage(t, options);
+  await openSession(page, file);
+  await page.waitForFunction((expected: number) =>
+    document.querySelectorAll('#messages > .message').length === expected, B_ROUNDS * 2);
+  const session = liveManager.findBySessionFile(file);
+  assert.ok(session);
+  const id = `owner/with/slashes-${number}`;
+  const card = page.locator(`.tool-card[data-tool-call-id="${id}"]`);
+  const mux = launcher.muxes.find(runtime => (runtime.entry.session as Record<string, unknown>).file === file);
+  assert.ok(mux);
+  const broadcast = (event: JsonAgentSessionEvent) => mux.broadcast(event);
+  const start = (suffix = '', parentToolCallId?: string, toolName = 'read', args = { path: '/tmp/child.txt' }) =>
+    broadcast({ type: 'tool_execution_start', toolCallId: id + suffix, toolName, args, ...(parentToolCallId ? { parentToolCallId } : {}) });
+  const end = (suffix = '', parentToolCallId?: string, isError = false, text = 'private child output') =>
+    broadcast({ type: 'tool_execution_end', toolCallId: id + suffix, toolName: suffix ? 'read' : 'codemode',
+      result: { content: [{ type: 'text', text }], details: {} }, isError, ...(parentToolCallId ? { parentToolCallId } : {}) });
+  const finish = (nestedCalls: NonNullable<ToolResultMessage['nestedCalls']>, text = 'parent result') => {
+    const message = { role: 'toolResult', toolCallId: id, toolName: 'codemode',
+      content: [{ type: 'text', text }], isError: false, timestamp: Date.now(), nestedCalls,
+    } satisfies ToolResultMessage;
+    broadcast({ type: 'message_end', message });
+    return message;
+  };
+  return { page, errors, file, session, id, card, broadcast, start, end, finish };
+}
+
+export async function toolCommand(page: Page, label: 'Expand All Tools' | 'Collapse All Tools') {
+  await page.click('#command-btn');
+  await page.locator('.command-item').filter({ hasText: label }).click();
+}

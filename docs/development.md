@@ -259,9 +259,10 @@ substitute paid inference or a full suite for a focused failing boundary.
 
 ## npm packages
 
-Publishable package source lives under `packages/`; registry publication is a
-separate release step. Exact internal dependencies identify one compatible release.
-Pi extensions first load their uncompiled `host-modules.ts` entry, then compiled
+Package source lives under `packages/`; registry publication is a separate
+release step. The experimental `@phimacs/tau` workspace runs from the checkout
+and is not a registry package. Exact internal dependencies identify one
+compatible release. Pi extensions first load their uncompiled `host-modules.ts` entry, then compiled
 extensions, sharing Pi's actual SDK through pimux's host-module bridge. Keep its
 imports and peer declarations in step; process-global registries hold shared state.
 

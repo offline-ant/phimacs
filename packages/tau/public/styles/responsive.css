@@ -1,0 +1,190 @@
+/* Breakpoints, reduced motion and accessibility overrides for the preceding sheets. */
+/* ═══════════════════════════════════════════════════════
+   Responsive
+   ═══════════════════════════════════════════════════════ */
+
+@media (max-width: 768px) {
+  /* Mobile: sidebar is a slide-over panel like Claude/ChatGPT */
+  .sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 80% !important;
+    max-width: 320px;
+    z-index: 200;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.3);
+    margin-left: 0;
+    transform: translateX(0);
+    transition: transform 0.3s var(--ease);
+    border-right: none;
+    background: var(--sidebar-bg-mobile);
+    backdrop-filter: blur(40px) saturate(1.5);
+    -webkit-backdrop-filter: blur(40px) saturate(1.5);
+  }
+
+  .sidebar.collapsed {
+    margin-left: 0;
+    transform: translateX(-100%);
+    box-shadow: none;
+  }
+
+  /* Show overlay behind sidebar */
+  .sidebar-overlay { display: block !important; opacity: 0; pointer-events: none; transition: opacity 0.3s var(--ease); }
+  .sidebar-overlay.visible { opacity: 1; pointer-events: auto; }
+
+  /* Always show sidebar toggle on mobile */
+  .sidebar-toggle {
+    display: flex !important;
+  }
+
+  .message.assistant { max-width: 100%; flex-wrap: wrap; }
+
+  .message-content {
+    font-size: 15px;
+    font-family: -apple-system, 'SF Pro Text', system-ui, sans-serif;
+  }
+
+  .message-copy-btn {
+    opacity: 0.4 !important;
+  }
+
+  /* Context pill stays in the header on mobile — enlarge its hit target */
+  .context-pill.visible {
+    display: inline-flex;
+    align-items: center;
+    min-height: 32px;
+    padding: 0 12px;
+  }
+
+  /* Stats card: right-anchoring can clip on narrow screens, so pin it
+     centered under the header instead (clamped to the viewport). The mobile
+     header renders ~56-58px tall (44px touch targets + 6px padding), so
+     offset 64px to clear it with a gap.
+     Centering uses auto margins rather than translateX so the dropdownIn
+     animation's transform doesn't fight the anchoring. */
+  .stats-card {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 64px);
+    left: 12px;
+    right: 12px;
+    margin-inline: auto;
+    width: min(280px, calc(100vw - 24px));
+  }
+
+  /* Slim down header */
+  .header {
+    padding: 6px 12px;
+    min-height: 40px;
+  }
+
+  .header-left {
+    gap: 6px;
+    flex: 1 1 auto;
+    min-width: 0; /* the agent name ellipsizes before the actions move */
+  }
+
+  /* The agent's actions stay on screen; the model button shrinks first. */
+  .header-right {
+    gap: 4px;
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  /* Keyboard shortcuts mean nothing on a touch screen. */
+  .shortcuts-hint { display: none; }
+
+  /* On a phone the model button holds only a short label; the picker shows the full string. */
+  .model-input {
+    min-width: 0;
+    max-width: 30vw;
+  }
+
+  .model-picker {
+    width: min(520px, calc(100vw - 24px));
+    max-height: 70vh;
+  }
+
+
+  .tool-card, .thinking-block { width: 100%; }
+  .tool-args-preview { max-width: 140px; }
+
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+    font-size: 18px;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════
+   Reduced motion / transparency
+   ═══════════════════════════════════════════════════════ */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .sidebar,
+  .header,
+  .header-menu,
+  .settings-panel,
+  .dialog {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--bg-solid);
+  }
+}
+
+/* High contrast mode */
+@media (prefers-contrast: more) {
+  :root,
+  :root[data-theme] {
+    --border: rgba(128, 128, 128, 0.5);
+    --border-hover: rgba(128, 128, 128, 0.7);
+    --text-dim: var(--text-secondary);
+  }
+}
+
+/* Minimum touch targets on mobile */
+@media (max-width: 768px) {
+  .icon-btn,
+  .input-icon-btn,
+  .settings-close,
+  .sidebar-toggle {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .agent-row,
+  .history-session,
+  .header-menu-item {
+    min-height: 44px;
+  }
+
+  /* Tree modal controls: the filter pill, the close button (which reuses
+     .model-picker-close, 28px on desktop), and the rows themselves all meet
+     the same 44px target as the rest of the app. */
+  .tree-view-filter,
+  .tree-view .model-picker-close {
+    min-height: 44px;
+  }
+
+  .tree-view .model-picker-close {
+    min-width: 44px;
+  }
+
+  .tree-row {
+    min-height: 44px;
+  }
+
+  .command-item {
+    padding: 12px 14px;
+    min-height: 44px;
+  }
+}
+
+

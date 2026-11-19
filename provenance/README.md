@@ -5,6 +5,7 @@ third-party material, which keeps its own grant:
 
 | Source | License | Destination |
 |---|---|---|
+| [Tau](https://github.com/milanglacier/pi-tau-web-server) | MIT | `packages/tau`; [original license](../packages/tau/LICENSE), [license declarations and source revisions](../packages/tau/NOTICE.md) |
 | [Pilish](https://github.com/dnouri/pilish) | GPL-3.0-or-later | `emacs/pilish`; [notice](../emacs/pilish/NOTICE.md), [import manifest](pilish-import.json) |
 | [self-compact-pi-agent](https://github.com/disler/self-compact-pi-agent) (idea only) | MIT | `packages/extensions/extensions/self-compact.ts` |
 | [Herdr](https://github.com/herdrdev/herdr) notification sounds | Apache-2.0 | `packages/sound/sounds/`; [NOTICE](../packages/sound/sounds/NOTICE) |

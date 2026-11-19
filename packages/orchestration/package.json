@@ -53,6 +53,10 @@
       "types": "./dist/bash-tool.d.ts",
       "default": "./dist/bash-tool.js"
     },
+    "./panel-owner": {
+      "types": "./dist/panel-owner.d.ts",
+      "default": "./dist/panel-owner.js"
+    },
     "./worker-task": {
       "types": "./dist/worker-task.d.ts",
       "default": "./dist/worker-task.js"

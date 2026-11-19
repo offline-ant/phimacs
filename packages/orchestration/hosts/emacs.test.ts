@@ -299,6 +299,29 @@ test("Emacs shell allocation is held and all command operations use exact persis
   assert.deepEqual(events.slice(-2), ["panel-close", "view-close"]);
 });
 
+test("an uncertain native panel disposal does not send the Emacs close again", async () => {
+  const events: string[] = [];
+  const { services } = panelServices(events);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "emacs-panel-close-"));
+  const socket = path.join(directory, "server");
+  const server = net.createServer(client => client.destroy());
+  await new Promise<void>(resolve => server.listen(socket, resolve));
+  try {
+    const pi = fakeEmacs(data => {
+      assert.equal(data.operation, "close");
+      assert.equal(data.panelId, binding.id);
+      events.push("view-close");
+      return { pending: true };
+    }, socket);
+    const target: HostTarget = { host: "emacs", endpoint: socket, id: "native", kind: "shell", name: "synthetic", panel: binding };
+    await assert.rejects(createEmacsHost(pi, socket, runtime(), services).close(target), /did not acknowledge panel Close/);
+    assert.deepEqual(events, ["panel-close", "view-close"]);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("acknowledged Emacs shell rollback cleans the exact view and preserves the original failure", async () => {
   const events: string[] = [];
   const { services } = panelServices(events);

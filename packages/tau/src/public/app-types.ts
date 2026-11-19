@@ -1,0 +1,138 @@
+import type { DialogRequest } from './dialogs.js';
+import type { NestedCallsRecord } from './nested-tool-calls.js';
+import type { InputContext, RuntimeInputContext } from './unsent-input.js';
+
+export type PendingDialog = DialogRequest & {
+  id: string;
+  method: 'confirm' | 'select' | 'input' | 'editor';
+  createdAt: number;
+  expiresAt?: number;
+};
+
+export type InteractionState = {
+  sessionId: string;
+  pendingDialogs: PendingDialog[];
+  interactionRevision: number;
+};
+
+export type ModelRecord = {
+  provider?: string;
+  id?: string;
+  name?: string;
+  model?: string;
+  label?: string;
+  context?: string | number;
+  contextWindow?: string | number;
+  context_window?: string | number;
+  reasoning?: boolean;
+  input?: string[];
+  maxOutput?: string | number;
+  max_output?: string | number;
+  maxOut?: string | number;
+  thinking?: boolean | string;
+  images?: boolean | string;
+  [key: string]: unknown;
+};
+
+export type LiveSession = {
+  id: string;
+  cwd?: string;
+  sessionFile?: string | null;
+  sessionName?: string | null;
+  modelSpec?: string;
+  modelLabel?: string;
+  model?: ModelRecord | string | null;
+  thinkingLevel?: string;
+  isStreaming?: boolean;
+  pendingInteractionCount?: number;
+  abortState?: 'idle' | 'stopping' | 'timed_out' | 'failed';
+  /** The compaction Pi is running, or null. `startedAt` is a Unix time in milliseconds. */
+  compaction?: { reason: string; startedAt: number } | null;
+  createdAt?: string;
+  lastActiveAt?: string;
+  contextUsage?: UsageRecord;
+  leafId?: string | null;
+  runtimeContext?: RuntimeInputContext | null;
+  inputReady?: boolean;
+  readOnly?: boolean;
+  shared?: boolean;
+  capabilities?: { stop?: boolean; navigateTree?: boolean };
+  /** Runtime identity is independent of the frontend that first started it. Closing only disconnects. */
+  attached?: { muxId: string; host: string | null; placement: string; name: string | null } | null;
+};
+
+export type UsageRecord = {
+  input?: number;
+  output?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  cost?: { total?: number };
+  [key: string]: unknown;
+};
+
+export type MessageContentBlock = {
+  type?: string;
+  text?: string;
+  thinking?: string;
+  source?: { data?: string; media_type?: string };
+  data?: string;
+  mimeType?: string;
+  media_type?: string;
+  /** A link to an image's data, in place of `data`, in server snapshots. */
+  url?: string;
+  id?: string;
+  name?: string;
+  arguments?: Record<string, unknown>;
+};
+
+export type AssistantStep = { type: 'text' | 'thinking'; text: string };
+
+export type AppMessage = {
+  id?: string;
+  role?: string;
+  content?: string | MessageContentBlock[];
+  usage?: UsageRecord;
+  images?: PendingImage[];
+  toolCallId?: string;
+  isError?: boolean;
+  nestedCalls?: NestedCallsRecord;
+  stopReason?: string;
+  errorMessage?: string;
+  timestamp?: number;
+};
+
+export type AppEvent = {
+  type?: string;
+  sessionId?: string;
+  session?: LiveSession;
+  message?: AppMessage | string;
+  assistantMessageEvent?: { type?: string; delta?: string; contentIndex?: number; partial?: AppMessage };
+  toolCallId?: string;
+  parentToolCallId?: string;
+  toolName?: string;
+  args?: Record<string, unknown>;
+  partialResult?: unknown;
+  result?: unknown;
+  isError?: boolean;
+  method?: string;
+  id?: string;
+  name?: string;
+  error?: string;
+  summary?: string;
+  contextUsage?: UsageRecord;
+  sessionFile?: string;
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
+  success?: boolean;
+  finalError?: string;
+  errorMessage?: string;
+  aborted?: boolean;
+  reason?: string;
+  [key: string]: unknown;
+};
+
+export type PendingImage = { data: string; mimeType: string };
+export type QueuedCommand = { type: string; inputContext?: InputContext; id?: string; message?: string; images?: PendingImage[]; sessionId?: string; error?: string; streamingBehavior?: 'followUp' | 'steer' };
+export type ExtensionUIRequest = { sessionId: string; event: AppEvent };
+export type RpcCommand = { type: string; sessionId?: string; filePath?: string; [key: string]: unknown };

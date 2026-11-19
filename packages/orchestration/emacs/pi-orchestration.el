@@ -132,11 +132,32 @@ User interfaces use this to refresh their view of `pi-orchestration-targets'.")
 (defun pi-orchestration-parent-buffer (parent)
   "Return the live native buffer of PARENT, a target ID, or nil."
   (when parent
-    (let* ((target (gethash parent pi-orchestration--targets))
-           (buffer (if target
-                       (plist-get target :buffer)
-                     (gethash parent pi-orchestration--roots))))
-      (and (buffer-live-p buffer) buffer))))
+    (let ((target-view (plist-get (gethash parent pi-orchestration--targets) :buffer))
+          (root-view (gethash parent pi-orchestration--roots)))
+      (cond ((buffer-live-p target-view) target-view)
+            ((buffer-live-p root-view) root-view)))))
+
+(defun pi-orchestration--attach-discovered-parent (parent endpoint)
+  "Register PARENT's exact live runtime as a background view on ENDPOINT.
+A browser-only parent has no native buffer until a child needs one.
+Keep the child independent of view discovery or attachment failure."
+  (let ((id (plist-get parent :id)))
+    (when (and (stringp id) (not (string-empty-p id))
+               (equal (plist-get parent :host) "emacs")
+               (stringp endpoint) (file-name-absolute-p endpoint)
+               (equal (plist-get parent :endpoint) endpoint)
+               (not (pi-orchestration-parent-buffer id)))
+      (with-demoted-errors "pi-orchestration parent view: %S"
+        (let ((matches (cl-loop for runtime in (pilish-list-runtimes)
+                                for ref = (plist-get runtime :orchestration)
+                                when (and (equal (plist-get runtime :protocol) 2)
+                                          (equal (plist-get ref :host) "emacs")
+                                          (equal (plist-get ref :endpoint) endpoint)
+                                          (equal (plist-get ref :id) id))
+                                collect runtime)))
+          (when (= (length matches) 1)
+            ;; The public attach path rechecks identity and reuses a matching view.
+            (puthash id (pilish-attach-runtime (car matches)) pi-orchestration--roots)))))))
 
 (defun pi-orchestration-panel-command-state (buffer)
   "Return BUFFER's managed command state, independent of wrapper lifetime.
@@ -308,6 +329,7 @@ would look like the worker died."
          (error (error "%s; target cleanup failed: %s"
                        (error-message-string err) (error-message-string cleanup))))
        (signal (car err) (cdr err))))
+    (pi-orchestration--attach-discovered-parent (plist-get spec :parent) endpoint)
     (pi-orchestration--run-target-functions id 'start)
     (list :muxId (plist-get target :mux-id)
           :target (list :host "emacs" :endpoint endpoint :id id
